@@ -1,0 +1,28 @@
+# environment / caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# data (download with download_data.py)
+data/raw/*
+!data/raw/.gitkeep
+data/processed/
+
+# run artefacts
+runs/
+!runs/.gitkeep
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# report build artefacts
+report/*.aux
+report/*.log
+report/*.out
+report/*.toc
