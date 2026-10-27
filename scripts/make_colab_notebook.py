@@ -45,6 +45,8 @@ JOBS = 2                # concurrent trainings on one GPU. A free Colab VM has 2
 ECHO_EVERY = 5          # show every 5th epoch line of each run (logs/<run-id>.log has all)
 EPOCHS = 80             # use 2 only for a quick smoke test
 WORKSHOP = True         # only the runs the PDF asks for (skips B_conv0 and C_w42)
+CLEAN_START = False    # True = delete runs/ and logs/ first (do this once after code changes, so no
+                       # old checkpoint is resumed). Keep False to continue an interrupted run.
 PUSH_BACK = False       # push results to GitHub (needs a token, repo is public)
 
 # --- GitHub access ---------------------------------------------------------
@@ -150,6 +152,16 @@ code(
 # Training output is echoed live (every ECHO_EVERY-th epoch line of each run);
 # the full output of every run is written to logs/<run-id>.log.
 # Stopping this cell (the stop button) also stops the running trainings.
+if CLEAN_START:
+    for d in ("runs", "logs"):
+        shutil.rmtree(d, ignore_errors=True)
+    print("removed old runs/ and logs/")
+else:
+    stale = sorted(p.name for p in Path("runs").glob("*") if (p / "best.pt").exists()
+                   and not (p / "run.json").exists()) if Path("runs").exists() else []
+    if stale:
+        print("note: unfinished runs will resume from their checkpoint:", ", ".join(stale))
+        print("      set CLEAN_START = True in the config cell to start them from scratch")
 cmd = ["python", "-u", "scripts/run_matrix.py", "--seeds", *[str(s) for s in SEEDS],
        "--jobs", str(JOBS), "--epochs", str(EPOCHS)]
 if PARTS:
