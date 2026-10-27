@@ -37,8 +37,16 @@ run () {
     echo "[skip] $id"
     return
   fi
+  local resume=""
+  if [ -f "runs/$id/best.pt" ]; then
+    resume="--resume"
+    echo "[resume] $id"
+  fi
   echo "[run] $id"
-  "$PY" train.py --run-id "$id" --epochs "$EPOCHS" --patience "$PATIENCE" "${EXTRA[@]}" "$@"
+  if ! "$PY" train.py --run-id "$id" --epochs "$EPOCHS" --patience "$PATIENCE" \
+        $resume "${EXTRA[@]}" "$@"; then
+    echo "[fail] $id (see runs/$id/train.log)"
+  fi
 }
 
 run_core () {
@@ -91,10 +99,10 @@ case "$PHASE" in
   imbalance) run_imbalance ;;
   all)
     run_core
+    run_long
     run_regularization
     run_optimizer
     run_imbalance
-    run_long
     ;;
   *)
     echo "Unknown phase: $PHASE" >&2

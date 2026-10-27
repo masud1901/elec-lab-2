@@ -33,6 +33,7 @@ import csv
 import json
 import os
 import platform
+import random
 import sys
 import time
 from pathlib import Path
@@ -113,6 +114,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-test", action="store_true")
     p.add_argument("--save-probs", action="store_true")
     p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--resume", action="store_true", help="continue from best.pt if present")
     p.add_argument("--deterministic", action="store_true", default=True)
     p.add_argument("--smoke", action="store_true", help="tiny fast run")
     return p.parse_args()
@@ -242,7 +244,11 @@ def main() -> None:
     if args.run_id is None:
         args.run_id = default_run_id(args)
     run_dir = Path(args.out) / args.run_id
-    if run_dir.exists() and any(run_dir.iterdir()) and not args.overwrite:
+    if (
+        run_dir.exists()
+        and any(run_dir.iterdir())
+        and not (args.overwrite or args.resume)
+    ):
         raise SystemExit(f"{run_dir} already exists; use --overwrite or another --run-id")
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -320,8 +326,6 @@ def main() -> None:
         "val_loss", "val_acc", "val_macro_f1", "val_weighted_f1", "val_gesture_macro_f1",
         "epoch_time_s",
     ]
-    with history_path.open("w", newline="") as f:
-        csv.DictWriter(f, fieldnames=history_fields).writeheader()
 
     best_score = -1.0
     best_epoch = -1
@@ -329,8 +333,27 @@ def main() -> None:
     start_time = time.time()
     stopped_early = False
     diverged = False
+    first_epoch = 1
 
-    for epoch in range(1, args.epochs + 1):
+    # Resume support: continue from the best checkpoint of an interrupted run.
+    ckpt_path = run_dir / "best.pt"
+    if args.resume and ckpt_path.exists():
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model_state_dict"])
+        if "optimizer_state_dict" in ckpt:
+            try:
+                optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+            except Exception as exc:  # noqa: BLE001
+                log(f"[resume] could not restore optimizer state: {exc}")
+        best_score = float(ckpt.get("val_score", -1.0))
+        best_epoch = int(ckpt.get("epoch", 0))
+        first_epoch = best_epoch + 1
+        log(f"[resume] continuing from epoch {best_epoch} (val score {best_score:.4f})")
+    if not history_path.exists() or first_epoch == 1:
+        with history_path.open("w", newline="") as f:
+            csv.DictWriter(f, fieldnames=history_fields).writeheader()
+
+    for epoch in range(first_epoch, args.epochs + 1):
         epoch_start = time.time()
 
         try:
@@ -379,9 +402,13 @@ def main() -> None:
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
                     "config": config,
                     "epoch": epoch,
                     "val_score": score,
+                    "torch_rng_state": torch.get_rng_state(),
+                    "numpy_rng_state": np.random.get_state(),
+                    "python_rng_state": random.getstate(),
                 },
                 run_dir / "best.pt",
             )
