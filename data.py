@@ -266,7 +266,7 @@ def make_loaders(
     batch_size: int = 100,
     num_workers: int = 0,  # kept for the command line; batching is done on the device
     seed: int = 0,
-    test_batch_size: int = 1024,
+    test_batch_size: int = 512,
     device: Optional[torch.device] = None,
 ) -> Dict[str, BatchLoader]:
     return {

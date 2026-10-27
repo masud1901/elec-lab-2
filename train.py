@@ -99,7 +99,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=100)
     p.add_argument("--micro-batch-size", type=int, default=0,
                    help="split each batch into micro-batches (gradient accumulation) to save memory")
-    p.add_argument("--test-batch-size", type=int, default=1024,
+    p.add_argument("--test-batch-size", type=int, default=512,
                    help="batch size for validation/test passes (no effect on results)")
     p.add_argument("--epochs", type=int, default=80)
     p.add_argument("--patience", type=int, default=15)
@@ -369,6 +369,7 @@ def main() -> None:
         with history_path.open("w", newline="") as f:
             csv.DictWriter(f, fieldnames=history_fields).writeheader()
 
+    epoch = first_epoch - 1   # stays set when a resumed run has no epochs left to train
     for epoch in range(first_epoch, args.epochs + 1):
         epoch_start = time.time()
 
@@ -394,6 +395,8 @@ def main() -> None:
             log(f"[diverge] epoch {epoch}: non-finite validation loss")
             diverged = True
             break
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
         val_metrics = compute_metrics(va_true, va_pred, class_names)
         score = float(val_metrics[args.select_metric])
         lr_now = optimizer.param_groups[0]["lr"]

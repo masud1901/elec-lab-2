@@ -224,7 +224,8 @@ def main() -> None:
                 cmd.append("--resume")
             cmd += extra
             log_file = log_dir / f"{run_id}.log"
-            print(f"[start] {run_id} (free {gpu_free_mb()} MiB) -> {log_file}", flush=True)
+            resumed = " [resuming from an earlier best.pt]" if "--resume" in cmd else ""
+            print(f"[start] {run_id} (free {gpu_free_mb()} MiB) -> {log_file}{resumed}", flush=True)
             env = dict(os.environ, PYTHONUNBUFFERED="1")
             proc = subprocess.Popen(
                 cmd,
