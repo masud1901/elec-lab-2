@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
-PY = os.environ.get("PY", str(ROOT / ".venv" / "bin" / "python"))
+_VENV_PY = ROOT / ".venv" / "bin" / "python"
+PY = os.environ.get("PY") or (str(_VENV_PY) if _VENV_PY.exists() else sys.executable)
 
 # (run-id, extra args, rough GPU memory requirement in MiB)
 VARIANTS: List[Tuple[str, List[str], int]] = [
@@ -70,6 +71,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seeds", type=int, nargs="+", default=[42])
     parser.add_argument("--parts", nargs="*", default=None, help="restrict to these parts")
+    parser.add_argument("--exclude-parts", nargs="*", default=None,
+                        help="skip these parts (e.g. when another machine runs them)")
     parser.add_argument("--jobs", type=int, default=2, help="maximum concurrent runs")
     parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--patience", type=int, default=15)
@@ -82,6 +85,8 @@ def main() -> None:
         for name, extra, mem in VARIANTS:
             part = PART_OF[name]
             if args.parts and part not in args.parts:
+                continue
+            if args.exclude_parts and part in args.exclude_parts:
                 continue
             jobs.append((f"{name}_s{seed}", extra + ["--seed", str(seed)], mem, seed, name))
 
