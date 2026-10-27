@@ -1,0 +1,9 @@
+{
+  "runs": [
+    "ref_s42"
+  ],
+  "variants": [
+    "ref"
+  ],
+  "n_runs": 1
+}

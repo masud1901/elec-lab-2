@@ -1,0 +1,19 @@
+run_id,variant,seed,class_id,class_name,precision,recall,f1,support
+ref_s42,ref,42,0,Null,0.941655,0.958916,0.950207,98798
+ref_s42,ref,42,1,Open Door 1,0.570938,0.737075,0.643456,677
+ref_s42,ref,42,2,Open Door 2,0.812743,0.91674,0.861614,1141
+ref_s42,ref,42,3,Close Door 1,0.505415,0.59322,0.545809,708
+ref_s42,ref,42,4,Close Door 2,0.827246,0.847321,0.837163,989
+ref_s42,ref,42,5,Open Fridge,0.823153,0.516612,0.634814,2739
+ref_s42,ref,42,6,Close Fridge,0.713782,0.851813,0.776713,1903
+ref_s42,ref,42,7,Open Dishwasher,0.595775,0.355462,0.445263,1190
+ref_s42,ref,42,8,Close Dishwasher,0.46114,0.377119,0.414918,944
+ref_s42,ref,42,9,Open Drawer 1,0.395041,0.510684,0.44548,468
+ref_s42,ref,42,10,Close Drawer 1,0.393357,0.435203,0.413223,517
+ref_s42,ref,42,11,Open Drawer 2,0.428312,0.489627,0.456922,482
+ref_s42,ref,42,12,Close Drawer 2,0.598131,0.401254,0.4803,319
+ref_s42,ref,42,13,Open Drawer 3,0.415395,0.792405,0.545059,790
+ref_s42,ref,42,14,Close Drawer 3,0.576923,0.458333,0.510836,720
+ref_s42,ref,42,15,Clean Table,0.956848,0.427852,0.591304,1192
+ref_s42,ref,42,16,Drink from Cup,0.671835,0.557803,0.609532,3806
+ref_s42,ref,42,17,Toggle Switch,0.685315,0.461176,0.551336,1275

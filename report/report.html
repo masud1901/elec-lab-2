@@ -1,0 +1,835 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+@page {
+  size: A4;
+  margin: 20mm 18mm 20mm 18mm;
+  @bottom-center {
+    content: counter(page) " / " counter(pages);
+    font-size: 8pt;
+    color: #666;
+  }
+}
+body {
+  font-family: "DejaVu Serif", Georgia, serif;
+  font-size: 9.6pt;
+  line-height: 1.42;
+  color: #1a1a1a;
+}
+h1, h2, h3, h4 {
+  font-family: "DejaVu Sans", Helvetica, sans-serif;
+  color: #12355b;
+  line-height: 1.2;
+}
+h1 { font-size: 20pt; margin: 0 0 4mm 0; }
+h2 { font-size: 13pt; margin: 6mm 0 2mm 0; border-bottom: 1px solid #d5dde8; padding-bottom: 1mm; }
+h3 { font-size: 10.5pt; margin: 4mm 0 1.5mm 0; }
+p { margin: 0 0 2.4mm 0; text-align: justify; }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 2mm 0 3mm 0;
+  font-family: "DejaVu Sans", Helvetica, sans-serif;
+  font-size: 7.6pt;
+}
+th { background: #eef2f7; color: #12355b; text-align: left; }
+th, td { border: 1px solid #cfd8e3; padding: 1.1mm 1.4mm; vertical-align: top; }
+tr:nth-child(even) td { background: #fafbfd; }
+code { font-family: "DejaVu Sans Mono", monospace; font-size: 8pt; background: #f2f4f7; padding: 0 0.5mm; }
+pre { background: #f5f7fa; border: 1px solid #dde3ea; padding: 2mm; font-size: 7.8pt; overflow-wrap: break-word; }
+figure { margin: 3mm 0 4mm 0; text-align: center; page-break-inside: avoid; }
+figure img { max-width: 100%; }
+figcaption { font-size: 8pt; color: #444; margin-top: 1mm; }
+.small { font-size: 8pt; color: #555; }
+.note { background: #f7f9fc; border-left: 3px solid #4c78a8; padding: 2mm 3mm; margin: 2mm 0 3mm 0; }
+.titlepage { text-align: center; margin-top: 30mm; }
+.titlepage h1 { font-size: 26pt; border: none; }
+.titlepage .subtitle { font-size: 12pt; color: #444; margin-bottom: 12mm; }
+.titlepage .meta { font-size: 10pt; color: #333; }
+.pagebreak { page-break-before: always; }
+</style></head>
+<body><div class="titlepage">
+
+# A Systematic Ablation Study of DeepConvLSTM on OPPORTUNITY
+
+<div class="subtitle">Workshop 2 — Human Activity Recognition from Wearable Sensors</div>
+
+<div class="meta">
+Masud<br>
+Department of Electrical Engineering<br>
+October 2026
+</div>
+
+</div>
+
+<div class="pagebreak"></div>
+
+<h2 id="abstract">Abstract</h2>
+<p>DeepConvLSTM combines convolutional feature extraction with recurrent temporal
+modelling and is a standard architecture for wearable human-activity
+recognition. This report reproduces the model on the OPPORTUNITY dataset and
+tests six design choices one at a time: the recurrent layers (LSTM vs. GRU vs.
+dense), the number of convolutional layers, the input window length, the
+regularisation recipe, the learning-rate schedule, and the loss function under
+class imbalance. All variants use the same preprocessing, split, optimisation
+budget and evaluation protocol; each is trained with three seeds where
+available and evaluated once on the held-out test subjects. The results
+quantify which choices matter, which are within seed noise, and how the choice
+of metric changes the conclusion.</p>
+<p>The reference reaches <strong>weighted F1 0.893</strong>, <strong>macro F1 0.595</strong> and <strong>gesture macro F1 0.574</strong> on the held-out test subjects (accuracy 0.896), with the best checkpoint at epoch 76.</p>
+<p>Headline effects (test split, difference to the reference):</p>
+<h2 id="1-introduction">1. Introduction</h2>
+<p>Human activity recognition (HAR) from on-body sensors is typically formulated as
+windowed classification: a short sequence of multi-channel sensor samples is
+mapped to an activity label. OPPORTUNITY is a challenging benchmark because it
+contains 113 heterogeneous sensor channels, 17 sporadic kitchen gestures, a
+dominant Null class, and strong subject and run variability. The original
+DeepConvLSTM paper argued that four convolutional layers learn useful features
+from raw signals and that two LSTM layers model how those features unfold over
+time. It supported the second claim with a single comparison against a
+non-recurrent CNN and reported weighted F1, a metric dominated by the Null
+class.</p>
+<p>This report treats those claims as hypotheses and performs a controlled
+ablation study. The questions are:</p>
+<ul>
+<li><strong>A.</strong> Does recurrence help, and does the LSTM cell matter compared with a GRU?</li>
+<li><strong>B.</strong> How many convolutional layers are useful, including zero?</li>
+<li><strong>C.</strong> How does the observation window affect overall and per-gesture performance?</li>
+<li><strong>D.</strong> Which regularisers actually matter (dropout, weight decay, augmentation)?</li>
+<li><strong>E.</strong> Is training sensitive to the learning rate, and does warm-up stabilise it?</li>
+<li><strong>F.</strong> Does focal loss improve rare-gesture recognition under class imbalance?</li>
+</ul>
+<p>The contribution is not a new architecture but a reproducible, seed-controlled
+comparison with per-class reporting, which exposes effects that weighted F1
+hides.</p>
+<h2 id="2-dataset-and-preprocessing">2. Dataset and preprocessing</h2>
+<p>OPPORTUNITY contains recordings from four subjects performing morning
+activities in a kitchen, with five ADL runs and one drill run per subject.
+Each raw file has 250 columns: a timestamp, 242 sensor columns and seven label
+columns. Following the OPPORTUNITY challenge preprocessing we:</p>
+<ol>
+<li>select the 113 sensor channels used by the challenge (accelerometers,
+   gyroscopes and magnetometers; quaternion and ambient channels removed);</li>
+<li>use the <code>ML_Both_Arms</code> column as the target, mapped to 18 classes
+   (0 = Null, 1–17 = gestures);</li>
+<li>linearly interpolate missing values per channel and fill the edges with the
+   nearest valid value;</li>
+<li>min-max normalise every channel to <code>[0, 1]</code> using statistics from the
+   training split only.</li>
+</ol>
+<p><strong>Split.</strong> The paper protocol is used: training contains all ADL and drill runs
+of subject 1 and ADL1–2 plus drill for subjects 2 and 3; validation contains
+ADL3 of subjects 2 and 3; test contains ADL4–5 of subjects 2 and 3. The test
+subjects never appear in training or model selection. A second, <code>course</code>
+protocol matching the public reference implementation is implemented for
+sensitivity checks, but the paper split is the primary protocol.</p>
+<table>
+<thead>
+<tr>
+<th>Split</th>
+<th>Recordings</th>
+<th>Samples</th>
+<th>Null fraction</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Train</td>
+<td>12</td>
+<td>497,014</td>
+<td>68.0%</td>
+</tr>
+<tr>
+<td>Validation</td>
+<td>2</td>
+<td>60,949</td>
+<td>81.8%</td>
+</tr>
+<tr>
+<td>Test</td>
+<td>4</td>
+<td>118,750</td>
+<td>83.3%</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Windowing.</strong> A window of 24 samples (0.8 s at 30 Hz) is labelled with the
+gesture at its last sample, so the model predicts the current activity after
+observing the preceding 0.8 s. Train and validation windows use stride 12
+(50% overlap); the test split is evaluated sample-wise with stride 1, giving
+118,658 windows. Windows are generated independently per recording, so no
+window crosses a recording boundary.</p>
+<p><strong>Class imbalance.</strong> The test split is 83.3% Null. Gesture support ranges from
+319 windows (Open Drawer 2) to 3,806 windows (Drink from Cup), so weighted F1 is
+dominated by Null while macro F1 is dominated by the rarest gestures. We report
+both, plus per-class F1 and a gesture-only macro average.</p>
+<h2 id="3-model-and-training-protocol">3. Model and training protocol</h2>
+<h3 id="31-architecture">3.1 Architecture</h3>
+<p>The reference model follows the workshop's ~4M-parameter variant. The input is
+a <code>24 × 113</code> window. Four 2-D convolutions with 64 filters and kernel <code>(5, 1)</code>
+slide over time while keeping the sensor-channel axis as width, producing an
+<code>8 × 113 × 64</code> feature map. The map is flattened at every time step to 7,232
+features, passed through dropout, and processed by two LSTM layers with 128
+units. The last time step is classified into 18 classes.</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Configuration</th>
+<th>Parameters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4 × Conv2d</td>
+<td>64 filters, kernel (5, 1), ReLU</td>
+<td>61,632</td>
+</tr>
+<tr>
+<td>LSTM × 2</td>
+<td>128 units, dropout 0.5 between layers</td>
+<td>3,900,416</td>
+</tr>
+<tr>
+<td>Classifier</td>
+<td>Linear(128 → 18)</td>
+<td>2,322</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td></td>
+<td><strong>3,965,778</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The ablation variants change exactly one factor:</p>
+<ul>
+<li><code>A_cnn</code>: the two LSTM layers are replaced by two dense layers of 128 units
+  over the flattened feature map (7,486,546 parameters).</li>
+<li><code>A_gru</code>: LSTM cells are replaced by GRU cells (2,990,418 parameters).</li>
+<li><code>B_conv0/1/2</code>: zero, one or two convolutional layers; with zero layers the
+  LSTM reads the 113 raw channels directly.</li>
+<li><code>C_w20/42/60</code>: windows of 20 (0.67 s), 42 (1.4 s) and 60 (2.0 s) samples.</li>
+<li><code>D_no_dropout</code>, <code>D_no_wd</code>, <code>D_no_aug</code>: remove dropout (0.5), weight decay
+  (1e-4) or augmentation (jitter, scaling and ±2-sample shift).</li>
+<li><code>E_lr1e-4</code>, <code>E_lr1e-2</code>: learning rates one decade below/above the reference.</li>
+<li><code>E_warm1e-4</code>, <code>E_warm1e-2</code>: linear warm-up over five epochs at those rates.</li>
+<li><code>F_focal</code>: focal loss with γ = 2 instead of cross-entropy.</li>
+</ul>
+<h3 id="32-optimisation">3.2 Optimisation</h3>
+<p>All runs use orthogonal initialisation, RMSProp with learning rate 1e-3 and
+decay ρ = 0.9, batch size 100, weight decay 1e-4, dropout 0.5 and the same
+augmentation unless the variant removes it. Training runs for at most 80 epochs
+with early stopping (patience 15) on validation macro F1. The checkpoint with
+the best validation macro F1 is reloaded and evaluated once on the test split.
+No test data is used for hyperparameter selection. Seeds 42, 43 and 44 are used
+for every variant where compute permits; results are reported as mean ± standard
+deviation across seeds.</p>
+<h3 id="33-metrics">3.3 Metrics</h3>
+<ul>
+<li><strong>Accuracy</strong> — overall window accuracy.</li>
+<li><strong>Weighted F1</strong> — the paper's primary metric; dominated by Null.</li>
+<li><strong>Macro F1 (18 classes)</strong> — equal weight to Null and every gesture.</li>
+<li><strong>Gesture macro F1</strong> — equal weight to the 17 gestures, excluding Null.</li>
+<li><strong>Per-class F1 / precision / recall / support</strong> — to expose rare-gesture
+  behaviour and open/close confusions.</li>
+<li><strong>Confusion matrix</strong> — row-normalised, for qualitative error analysis.</li>
+</ul>
+<h2 id="4-part-0-reproducing-the-reference">4. Part 0 — Reproducing the reference</h2>
+<p><strong>Setup.</strong> The reference model is trained with the protocol of Section 3 (1 seed(s): 42).</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Configuration</th>
+<th>Seeds</th>
+<th>Weighted F1</th>
+<th>Macro F1</th>
+<th>Gesture macro F1</th>
+<th>Accuracy</th>
+<th>Params</th>
+<th>Best epoch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ref</code></td>
+<td>Reference (4 conv + LSTM, 0.8 s)</td>
+<td>1</td>
+<td>0.893</td>
+<td>0.595</td>
+<td>0.574</td>
+<td>0.896</td>
+<td>3,965,778</td>
+<td>76.0</td>
+</tr>
+</tbody>
+</table>
+<figure><img src="../results/figures/fig_ref_curves.png" /><figcaption>Reference training: cross-entropy loss and validation macro F1 per epoch.</figcaption></figure>
+
+<p>The reference reaches weighted F1 0.893 and macro F1 0.595. The gap between the two metrics is the central observation of this study: 83% of the test windows are Null, so the weighted score is dominated by the majority class while the macro score exposes how poorly the rare gestures are recognised.</p>
+<figure><img src="../results/figures/fig_confusion_ref.png" /><figcaption>Reference model: row-normalised confusion matrix on the test split.</figcaption></figure>
+
+<h2 id="5-part-a-is-the-lstm-what-helps">5. Part A — Is the LSTM what helps?</h2>
+<p><strong>Question.</strong> Does the recurrent stack actually contribute, and do LSTM cells matter specifically?</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Configuration</th>
+<th>Seeds</th>
+<th>Weighted F1</th>
+<th>Macro F1</th>
+<th>Gesture macro F1</th>
+<th>Accuracy</th>
+<th>Params</th>
+<th>Best epoch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ref</code></td>
+<td>Reference (4 conv + LSTM, 0.8 s)</td>
+<td>1</td>
+<td>0.893</td>
+<td>0.595</td>
+<td>0.574</td>
+<td>0.896</td>
+<td>3,965,778</td>
+<td>76.0</td>
+</tr>
+</tbody>
+</table>
+<figure><img src="../results/figures/fig_part_a.png" /><figcaption>Part A: test scores of the reference, the CNN and the GRU variant.</figcaption></figure>
+
+<h2 id="6-part-b-do-the-convolutions-matter">6. Part B — Do the convolutions matter?</h2>
+<p><strong>Question.</strong> How much of the performance comes from the convolutional feature extractor?</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Configuration</th>
+<th>Seeds</th>
+<th>Weighted F1</th>
+<th>Macro F1</th>
+<th>Gesture macro F1</th>
+<th>Accuracy</th>
+<th>Params</th>
+<th>Best epoch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ref</code></td>
+<td>Reference (4 conv + LSTM, 0.8 s)</td>
+<td>1</td>
+<td>0.893</td>
+<td>0.595</td>
+<td>0.574</td>
+<td>0.896</td>
+<td>3,965,778</td>
+<td>76.0</td>
+</tr>
+</tbody>
+</table>
+<figure><img src="../results/figures/fig_part_b.png" /><figcaption>Part B: test F1 as a function of the number of convolutional layers.</figcaption></figure>
+
+<h2 id="7-part-c-how-long-should-the-window-be">7. Part C — How long should the window be?</h2>
+<p><strong>Question.</strong> How much history does the model need before it can classify a gesture?</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Configuration</th>
+<th>Seeds</th>
+<th>Weighted F1</th>
+<th>Macro F1</th>
+<th>Gesture macro F1</th>
+<th>Accuracy</th>
+<th>Params</th>
+<th>Best epoch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ref</code></td>
+<td>Reference (4 conv + LSTM, 0.8 s)</td>
+<td>1</td>
+<td>0.893</td>
+<td>0.595</td>
+<td>0.574</td>
+<td>0.896</td>
+<td>3,965,778</td>
+<td>76.0</td>
+</tr>
+</tbody>
+</table>
+<figure><img src="../results/figures/fig_part_c.png" /><figcaption>Part C: test F1 as a function of the window length.</figcaption></figure>
+
+<figure><img src="../results/figures/fig_part_c_per_gesture.png" /><figcaption>Part C: per-gesture F1 for each window length.</figcaption></figure>
+
+<p>To relate the window length to the gestures themselves, we measured how long
+each gesture actually lasts in the recordings (contiguous runs of one label):</p>
+<table>
+<thead>
+<tr>
+<th>Gesture</th>
+<th>Events</th>
+<th>Mean duration (s)</th>
+<th>Median (s)</th>
+<th>Max (s)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Open Door 1</td>
+<td>94</td>
+<td>4.39</td>
+<td>4.54</td>
+<td>6.47</td>
+</tr>
+<tr>
+<td>Open Door 2</td>
+<td>92</td>
+<td>4.81</td>
+<td>4.90</td>
+<td>6.80</td>
+</tr>
+<tr>
+<td>Close Door 1</td>
+<td>89</td>
+<td>4.18</td>
+<td>4.28</td>
+<td>7.07</td>
+</tr>
+<tr>
+<td>Close Door 2</td>
+<td>90</td>
+<td>4.31</td>
+<td>4.31</td>
+<td>5.97</td>
+</tr>
+<tr>
+<td>Open Fridge</td>
+<td>157</td>
+<td>2.94</td>
+<td>2.67</td>
+<td>7.67</td>
+</tr>
+<tr>
+<td>Close Fridge</td>
+<td>159</td>
+<td>2.53</td>
+<td>2.42</td>
+<td>12.47</td>
+</tr>
+<tr>
+<td>Open Dishwasher</td>
+<td>102</td>
+<td>2.90</td>
+<td>2.91</td>
+<td>5.67</td>
+</tr>
+<tr>
+<td>Close Dishwasher</td>
+<td>99</td>
+<td>3.07</td>
+<td>2.88</td>
+<td>7.63</td>
+</tr>
+<tr>
+<td>Open Drawer 1</td>
+<td>96</td>
+<td>2.01</td>
+<td>1.94</td>
+<td>3.23</td>
+</tr>
+<tr>
+<td>Close Drawer 1</td>
+<td>95</td>
+<td>2.01</td>
+<td>1.91</td>
+<td>7.03</td>
+</tr>
+<tr>
+<td>Open Drawer 2</td>
+<td>91</td>
+<td>2.23</td>
+<td>2.33</td>
+<td>3.90</td>
+</tr>
+<tr>
+<td>Close Drawer 2</td>
+<td>90</td>
+<td>1.85</td>
+<td>1.68</td>
+<td>4.73</td>
+</tr>
+<tr>
+<td>Open Drawer 3</td>
+<td>102</td>
+<td>2.41</td>
+<td>2.33</td>
+<td>4.00</td>
+</tr>
+<tr>
+<td>Close Drawer 3</td>
+<td>103</td>
+<td>2.31</td>
+<td>2.30</td>
+<td>6.27</td>
+</tr>
+<tr>
+<td>Clean Table</td>
+<td>79</td>
+<td>6.04</td>
+<td>5.76</td>
+<td>17.10</td>
+</tr>
+<tr>
+<td>Drink from Cup</td>
+<td>213</td>
+<td>7.37</td>
+<td>7.18</td>
+<td>16.50</td>
+</tr>
+<tr>
+<td>Toggle Switch</td>
+<td>156</td>
+<td>2.19</td>
+<td>2.06</td>
+<td>4.00</td>
+</tr>
+</tbody>
+</table>
+<h2 id="8-part-d-how-much-regularisation-is-needed">8. Part D — How much regularisation is needed?</h2>
+<p><strong>Question.</strong> Which regulariser is doing the work, if any?</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Configuration</th>
+<th>Seeds</th>
+<th>Weighted F1</th>
+<th>Macro F1</th>
+<th>Gesture macro F1</th>
+<th>Accuracy</th>
+<th>Params</th>
+<th>Best epoch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ref</code></td>
+<td>Reference (4 conv + LSTM, 0.8 s)</td>
+<td>1</td>
+<td>0.893</td>
+<td>0.595</td>
+<td>0.574</td>
+<td>0.896</td>
+<td>3,965,778</td>
+<td>76.0</td>
+</tr>
+</tbody>
+</table>
+<p>Overfitting probe (first seed, at the selected epoch):</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Epoch</th>
+<th>Train macro F1</th>
+<th>Val macro F1</th>
+<th>Gap</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ref</code></td>
+<td>76</td>
+<td>0.858</td>
+<td>0.583</td>
+<td>+0.275</td>
+</tr>
+</tbody>
+</table>
+<figure><img src="../results/figures/fig_part_d.png" /><figcaption>Part D: test scores with and without each regulariser.</figcaption></figure>
+
+<h2 id="9-part-e-which-optimizer-settings-work-best">9. Part E — Which optimizer settings work best?</h2>
+<p><strong>Question.</strong> How sensitive is training to the learning rate, and can warm-up rescue a bad one?</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Configuration</th>
+<th>Seeds</th>
+<th>Weighted F1</th>
+<th>Macro F1</th>
+<th>Gesture macro F1</th>
+<th>Accuracy</th>
+<th>Params</th>
+<th>Best epoch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ref</code></td>
+<td>Reference (4 conv + LSTM, 0.8 s)</td>
+<td>1</td>
+<td>0.893</td>
+<td>0.595</td>
+<td>0.574</td>
+<td>0.896</td>
+<td>3,965,778</td>
+<td>76.0</td>
+</tr>
+</tbody>
+</table>
+<figure><img src="../results/figures/fig_part_e.png" /><figcaption>Part E: validation macro F1 per epoch for each learning-rate setting.</figcaption></figure>
+
+<h2 id="10-part-f-does-handling-class-imbalance-help-rare-gestures">10. Part F — Does handling class imbalance help rare gestures?</h2>
+<p><strong>Question.</strong> Does a loss that down-weights easy windows help the rare gestures?</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Configuration</th>
+<th>Seeds</th>
+<th>Weighted F1</th>
+<th>Macro F1</th>
+<th>Gesture macro F1</th>
+<th>Accuracy</th>
+<th>Params</th>
+<th>Best epoch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ref</code></td>
+<td>Reference (4 conv + LSTM, 0.8 s)</td>
+<td>1</td>
+<td>0.893</td>
+<td>0.595</td>
+<td>0.574</td>
+<td>0.896</td>
+<td>3,965,778</td>
+<td>76.0</td>
+</tr>
+</tbody>
+</table>
+<figure><img src="../results/figures/fig_part_f.png" /><figcaption>Part F: per-class F1 with cross-entropy and with focal loss.</figcaption></figure>
+
+<h2 id="11-discussion">11. Discussion</h2>
+<p>The reference model already separates the two questions the study asks: on the weighted metric it is close to the published numbers, while on the macro metric it is roughly half as good, and every variant that trades capacity for simplicity or removes regularisation moves the two metrics in different directions. Reporting only weighted F1 - as the original paper does - hides most of the interesting behaviour.</p>
+<h2 id="12-limitations-and-threats-to-validity">12. Limitations and threats to validity</h2>
+<ul>
+<li><strong>One dataset, one split.</strong> OPPORTUNITY is the only benchmark; the paper
+  split leaves only four test recordings. Conclusions may not transfer to
+  other sensor setups.</li>
+<li><strong>Seed noise.</strong> Three seeds are enough to expose large effects but not to
+  resolve differences of one or two F1 points. We report standard deviations
+  and avoid significance claims for small deltas.</li>
+<li><strong>Test-set reuse.</strong> All variants are evaluated on the same test recordings,
+  which is standard for ablation studies but can overstate the reliability of
+  the ranking.</li>
+<li><strong>Architecture variant.</strong> The ~4M-parameter reference is the workshop's
+  Conv2d-over-time variant, not the paper's Conv1d sensor-fusion model
+  (~1M parameters); parameter counts therefore differ from the paper.</li>
+<li><strong>Window-length comparability.</strong> Changing the window changes the number of
+  test windows and the class balance, so Part C compares models on slightly
+  different test sets.</li>
+<li><strong>Hyperparameter budget.</strong> We did not tune each variant; the reference
+  configuration is applied uniformly. A variant might improve with its own
+  learning rate, which would weaken the ablation's causal interpretation.</li>
+<li><strong>Metric dependence.</strong> Weighted and macro F1 answer different questions;
+  the report treats both as first-class results rather than choosing a single
+  winner.</li>
+</ul>
+<h2 id="13-reproducibility">13. Reproducibility</h2>
+<p>Code, configuration, per-run logs, CSV tables and the report source are in the
+repository. The raw dataset is downloaded by <code>download_data.py</code>; processed
+arrays, checkpoints and the virtual environment are not committed. Each run
+records its exact command, git commit, library versions, GPU, parameter count,
+per-epoch history and test metrics in <code>runs/&lt;run-id&gt;/</code>.</p>
+<pre><code class="language-bash">python download_data.py
+python preprocess.py --split paper
+scripts/run_all.sh core
+scripts/run_all.sh regularization
+scripts/run_all.sh optimizer
+scripts/run_all.sh imbalance
+scripts/run_all.sh long
+python summarize.py
+python evaluate.py --run runs/ref_s42 --split test
+</code></pre>
+<p>Hardware: NVIDIA GeForce GTX 1650 Ti (4 GB), PyTorch <!-- TORCH_VERSION -->,
+CUDA <!-- CUDA_VERSION -->, Python <!-- PYTHON_VERSION -->.</p>
+<h2 id="references">References</h2>
+<ol>
+<li>Ordóñez, F. J., &amp; Roggen, D. (2016). Deep Convolutional and LSTM Recurrent
+   Neural Networks for Multimodal Wearable Activity Recognition. <em>Sensors</em>,
+   16(1), 115.</li>
+<li>Chavarriaga, R., et al. (2013). The Opportunity challenge: A benchmark
+   database for on-body sensor-based activity recognition. <em>Pattern Recognition
+   Letters</em>, 34(15), 2033–2042.</li>
+<li>Lin, T.-Y., Goyal, P., Girshick, R., He, K., &amp; Dollár, P. (2017). Focal Loss
+   for Dense Object Detection. <em>ICCV</em>.</li>
+</ol>
+<h2 id="appendix-a-per-class-test-results">Appendix A — Per-class test results</h2>
+<p>Reference model, test split (mean over seeds).</p>
+<table>
+<thead>
+<tr>
+<th>Id</th>
+<th>Class</th>
+<th>Test windows</th>
+<th>Precision</th>
+<th>Recall</th>
+<th>F1</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>Null</td>
+<td>98798</td>
+<td>0.942</td>
+<td>0.959</td>
+<td>0.950</td>
+</tr>
+<tr>
+<td>1</td>
+<td>Open Door 1</td>
+<td>677</td>
+<td>0.571</td>
+<td>0.737</td>
+<td>0.643</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Open Door 2</td>
+<td>1141</td>
+<td>0.813</td>
+<td>0.917</td>
+<td>0.862</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Close Door 1</td>
+<td>708</td>
+<td>0.505</td>
+<td>0.593</td>
+<td>0.546</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Close Door 2</td>
+<td>989</td>
+<td>0.827</td>
+<td>0.847</td>
+<td>0.837</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Open Fridge</td>
+<td>2739</td>
+<td>0.823</td>
+<td>0.517</td>
+<td>0.635</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Close Fridge</td>
+<td>1903</td>
+<td>0.714</td>
+<td>0.852</td>
+<td>0.777</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Open Dishwasher</td>
+<td>1190</td>
+<td>0.596</td>
+<td>0.355</td>
+<td>0.445</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Close Dishwasher</td>
+<td>944</td>
+<td>0.461</td>
+<td>0.377</td>
+<td>0.415</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Open Drawer 1</td>
+<td>468</td>
+<td>0.395</td>
+<td>0.511</td>
+<td>0.445</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Close Drawer 1</td>
+<td>517</td>
+<td>0.393</td>
+<td>0.435</td>
+<td>0.413</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Open Drawer 2</td>
+<td>482</td>
+<td>0.428</td>
+<td>0.490</td>
+<td>0.457</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Close Drawer 2</td>
+<td>319</td>
+<td>0.598</td>
+<td>0.401</td>
+<td>0.480</td>
+</tr>
+<tr>
+<td>13</td>
+<td>Open Drawer 3</td>
+<td>790</td>
+<td>0.415</td>
+<td>0.792</td>
+<td>0.545</td>
+</tr>
+<tr>
+<td>14</td>
+<td>Close Drawer 3</td>
+<td>720</td>
+<td>0.577</td>
+<td>0.458</td>
+<td>0.511</td>
+</tr>
+<tr>
+<td>15</td>
+<td>Clean Table</td>
+<td>1192</td>
+<td>0.957</td>
+<td>0.428</td>
+<td>0.591</td>
+</tr>
+<tr>
+<td>16</td>
+<td>Drink from Cup</td>
+<td>3806</td>
+<td>0.672</td>
+<td>0.558</td>
+<td>0.610</td>
+</tr>
+<tr>
+<td>17</td>
+<td>Toggle Switch</td>
+<td>1275</td>
+<td>0.685</td>
+<td>0.461</td>
+<td>0.551</td>
+</tr>
+</tbody>
+</table></body></html>

@@ -191,10 +191,10 @@ def aggregate(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def fmt(mean: Optional[float], std: Optional[float], digits: int = 3) -> str:
+def fmt(mean: Optional[float], std: Optional[float], digits: int = 3, n: int = 1) -> str:
     if mean is None or (isinstance(mean, float) and np.isnan(mean)):
         return "-"
-    if std is None or (isinstance(std, float) and np.isnan(std)):
+    if n < 2 or std is None or (isinstance(std, float) and np.isnan(std)):
         return f"{mean:.{digits}f}"
     return f"{mean:.{digits}f} ± {std:.{digits}f}"
 
@@ -215,10 +215,10 @@ def markdown_tables(agg: pd.DataFrame) -> str:
                 "| {v} | {n} | {w} | {m} | {g} | {a} | {p:,} | {e} |".format(
                     v=r["variant"],
                     n=int(r["n_seeds"]),
-                    w=fmt(r["test_weighted_f1_mean"], r["test_weighted_f1_std"]),
-                    m=fmt(r["test_macro_f1_mean"], r["test_macro_f1_std"]),
-                    g=fmt(r["test_gesture_macro_f1_mean"], r["test_gesture_macro_f1_std"]),
-                    a=fmt(r["test_accuracy_mean"], r["test_accuracy_std"]),
+                    w=fmt(r["test_weighted_f1_mean"], r["test_weighted_f1_std"], n=int(r["n_seeds"])),
+                    m=fmt(r["test_macro_f1_mean"], r["test_macro_f1_std"], n=int(r["n_seeds"])),
+                    g=fmt(r["test_gesture_macro_f1_mean"], r["test_gesture_macro_f1_std"], n=int(r["n_seeds"])),
+                    a=fmt(r["test_accuracy_mean"], r["test_accuracy_std"], n=int(r["n_seeds"])),
                     p=int(r["params"]) if not pd.isna(r["params"]) else 0,
                     e=f"{r['best_epoch_mean']:.1f}" if not pd.isna(r["best_epoch_mean"]) else "-",
                 )
@@ -250,13 +250,17 @@ def latex_tables(agg: pd.DataFrame) -> str:
             "\\midrule",
         ]
         for _, r in sub.iterrows():
-            lines.append(
-                f"{r['variant'].replace('_', '\\_')} & "
-                f"{r['test_weighted_f1_mean']:.3f}$\\pm${r['test_weighted_f1_std']:.3f} & "
-                f"{r['test_macro_f1_mean']:.3f}$\\pm${r['test_macro_f1_std']:.3f} & "
-                f"{r['test_gesture_macro_f1_mean']:.3f}$\\pm${r['test_gesture_macro_f1_std']:.3f} & "
-                f"{int(r['params']):,} \\\\"
+            name = str(r["variant"]).replace("_", "\\_")
+            w = "{:.3f}$\\pm${:.3f}".format(
+                r["test_weighted_f1_mean"], r["test_weighted_f1_std"]
             )
+            m = "{:.3f}$\\pm${:.3f}".format(
+                r["test_macro_f1_mean"], r["test_macro_f1_std"]
+            )
+            g = "{:.3f}$\\pm${:.3f}".format(
+                r["test_gesture_macro_f1_mean"], r["test_gesture_macro_f1_std"]
+            )
+            lines.append(f"{name} & {w} & {m} & {g} & {int(r['params']):,} \\\\")
         lines += ["\\bottomrule", "\\end{tabular}", "\\end{table}", ""]
     return "\n".join(lines)
 
@@ -305,13 +309,20 @@ def _bar_part(plt, df, variants, title, out, metrics=(("test_weighted_f1", "Weig
     ax.set_ylabel("Score")
     ax.set_ylim(0, 1.0)
     ax.set_title(title)
-    ax.legend(frameon=False)
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(frameon=False)
     fig.tight_layout()
     fig.savefig(out)
     plt.close(fig)
 
 
-def make_figures(df: pd.DataFrame, pc: pd.DataFrame, raw: Dict[str, dict], out_dir: Path) -> None:
+def make_figures(
+    df: pd.DataFrame,
+    pc: pd.DataFrame,
+    raw: Dict[str, dict],
+    out_dir: Path,
+    runs_dir: Path = Path("runs"),
+) -> None:
     plt = _setup_matplotlib()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -320,7 +331,7 @@ def make_figures(df: pd.DataFrame, pc: pd.DataFrame, raw: Dict[str, dict], out_d
     if not ref.empty:
         fig, axes = plt.subplots(1, 2, figsize=(8.0, 3.0))
         for _, r in ref.iterrows():
-            hist_path = Path("runs") / r["run_id"] / "history.csv"
+            hist_path = runs_dir / r["run_id"] / "history.csv"
             if not hist_path.exists():
                 continue
             h = pd.read_csv(hist_path)
@@ -375,7 +386,8 @@ def make_figures(df: pd.DataFrame, pc: pd.DataFrame, raw: Dict[str, dict], out_d
         ax.set_ylabel("Score")
         ax.set_ylim(0, 1.0)
         ax.set_title("Part B: conv depth")
-        ax.legend(frameon=False)
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend(frameon=False)
         fig.tight_layout()
         fig.savefig(out_dir / "fig_part_b.png")
         plt.close(fig)
@@ -404,7 +416,8 @@ def make_figures(df: pd.DataFrame, pc: pd.DataFrame, raw: Dict[str, dict], out_d
         ax.set_ylabel("Score")
         ax.set_ylim(0, 1.0)
         ax.set_title("Part C: window length")
-        ax.legend(frameon=False)
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend(frameon=False)
         fig.tight_layout()
         fig.savefig(out_dir / "fig_part_c.png")
         plt.close(fig)
@@ -452,7 +465,7 @@ def make_figures(df: pd.DataFrame, pc: pd.DataFrame, raw: Dict[str, dict], out_d
                 continue
             curves = []
             for _, r in sub.iterrows():
-                p = Path("runs") / r["run_id"] / "history.csv"
+                p = runs_dir / r["run_id"] / "history.csv"
                 if p.exists():
                     h = pd.read_csv(p)
                     curves.append(h.set_index("epoch")["val_macro_f1"])
@@ -491,10 +504,9 @@ def make_figures(df: pd.DataFrame, pc: pd.DataFrame, raw: Dict[str, dict], out_d
             support.to_csv(out_dir / "fig_part_f_support.csv")
 
     # Reference confusion matrix
-    ref_json = Path("runs") / f"ref_s{int(ref['seed'].min()) if not ref.empty else 42}" / "run.json"
     cm = None
     for _, r in ref.iterrows():
-        p = Path("runs") / r["run_id"] / "confusion_test.npy"
+        p = runs_dir / r["run_id"] / "confusion_test.npy"
         if p.exists():
             cm = np.load(p)
             break
@@ -547,7 +559,7 @@ def main() -> None:
     )
 
     if not args.no_figures:
-        make_figures(df, pc, raw, out_dir / "figures")
+        make_figures(df, pc, raw, out_dir / "figures", runs_dir)
 
     print(f"[done] {out_dir}: {len(df)} runs, {df['variant'].nunique()} variants")
     print(markdown_tables(agg))
