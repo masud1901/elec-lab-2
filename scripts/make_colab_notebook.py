@@ -42,13 +42,13 @@ SEEDS = [42]            # e.g. [42, 43, 44]
 PARTS = ["A", "B"]       # 0 (reference), A, B, C, D, E, F
 JOBS = 1                # concurrent trainings on one GPU (2 needs >8 GB)
 EPOCHS = 80
-PUSH_BACK = False       # push results to GitHub with GITHUB_TOKEN
+PUSH_BACK = False       # push results to GitHub (needs a token, repo is public)
 
 # --- GitHub access ---------------------------------------------------------
-# The repository is PRIVATE, so Colab needs a token to clone it.
-# Easiest: make the repo public -> leave GITHUB_TOKEN = "".
-# Otherwise: create a token (github.com/settings/tokens, scope: repo) and
-# paste it here, or store it as a Colab secret named GITHUB_TOKEN.
+# The repository is PUBLIC, so cloning works without any token.
+# A token is only needed if PUSH_BACK = True (write access).
+# Create one at github.com/settings/tokens with scope "repo", paste it here,
+# or store it as a Colab secret named GITHUB_TOKEN.
 GITHUB_TOKEN = ""
 
 try:                                   # Colab secrets
@@ -62,7 +62,7 @@ except Exception:
     except Exception:
         pass
 
-print("token found:", bool(GITHUB_TOKEN))
+print("token found:", bool(GITHUB_TOKEN), "(not needed for cloning a public repo)")
 """
 )
 
