@@ -39,10 +39,11 @@ code(
 REPO_URL = "https://github.com/masud1901/elec-lab-2.git"
 BRANCH = "master"
 SEEDS = [42]            # e.g. [42, 43, 44]
-PARTS = ["A", "B"]       # 0 (reference), A, B, C, D, E, F
+PARTS = ["A", "B"]       # 0 (reference), A, B, C, D, E, F  (None = everything)
 JOBS = 4                # concurrent trainings on one GPU
                        # T4 (15 GB): 4 is safe for the 0.8 s window, use 2-3 for 1.4/2.0 s
-EPOCHS = 80
+EPOCHS = 80             # use 2 only for a quick smoke test
+WORKSHOP = True         # only the runs the PDF asks for (skips B_conv0 and C_w42)
 PUSH_BACK = False       # push results to GitHub (needs a token, repo is public)
 
 # --- GitHub access ---------------------------------------------------------
@@ -151,8 +152,20 @@ cmd = ["python", "-u", "scripts/run_matrix.py", "--seeds", *[str(s) for s in SEE
        "--jobs", str(JOBS), "--epochs", str(EPOCHS)]
 if PARTS:
     cmd += ["--parts", *PARTS]
+if WORKSHOP:
+    cmd.append("--workshop")
 print(" ".join(cmd), flush=True)
-subprocess.run(cmd, check=False)
+# subprocess.run(cmd) does not show the child's output in a Colab cell; read
+# the pipe and print it from the notebook process instead.
+proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, bufsize=1)
+try:
+    for line in proc.stdout:
+        print(line, end="", flush=True)
+    proc.wait()
+except KeyboardInterrupt:
+    proc.terminate()      # stop the runner (running trainings finish on their own)
+    raise
 """
 )
 

@@ -47,6 +47,10 @@ VARIANTS: List[Tuple[str, List[str], int]] = [
     ("F_focal", ["--part", "F", "--loss", "focal", "--focal-gamma", "2"], 1500),
 ]
 
+# Variants the workshop PDF does not ask for (B: only 1 and 2 conv layers,
+# C: only 0.67 s and 2 s windows).
+NOT_IN_WORKSHOP = {"B_conv0", "C_w42"}
+
 PART_OF = {
     "ref": "0", "A_cnn": "A", "A_gru": "A", "B_conv0": "B", "B_conv1": "B",
     "B_conv2": "B", "C_w20": "C", "C_w42": "C", "C_w60": "C",
@@ -82,6 +86,8 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--patience", type=int, default=15)
     parser.add_argument("--margin", type=int, default=250, help="free MiB kept in reserve")
+    parser.add_argument("--workshop", action="store_true",
+                        help="only the runs the workshop PDF asks for (skips B_conv0, C_w42)")
     parser.add_argument("--list", action="store_true", help="print the job list and exit")
     parser.add_argument("--quiet", action="store_true", help="do not echo training output")
     parser.add_argument("--order", default="heavy-first",
@@ -100,6 +106,8 @@ def main() -> None:
             if args.parts and part not in args.parts:
                 continue
             if args.exclude_parts and part in args.exclude_parts:
+                continue
+            if args.workshop and name in NOT_IN_WORKSHOP:
                 continue
             jobs.append((f"{name}_s{seed}", extra + ["--seed", str(seed)], mem, seed, name))
 
