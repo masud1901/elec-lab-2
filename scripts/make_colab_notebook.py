@@ -134,12 +134,21 @@ code(
 
 code(
     """# --- run the matrix ------------------------------------------------------
-cmd = ["python", "scripts/run_matrix.py", "--seeds", *[str(s) for s in SEEDS],
+# Output of every training run is echoed live (one line per epoch) and also
+# written to logs/<run-id>.log
+cmd = ["python", "-u", "scripts/run_matrix.py", "--seeds", *[str(s) for s in SEEDS],
        "--jobs", str(JOBS), "--epochs", str(EPOCHS)]
 if PARTS:
     cmd += ["--parts", *PARTS]
-print(" ".join(cmd))
+print(" ".join(cmd), flush=True)
 subprocess.run(cmd, check=False)
+"""
+)
+
+code(
+    """# --- watch progress (optional, run in a second cell) ---------------------
+# Streams the live log of the running trainings; Ctrl-C stops the tail only.
+!tail -n 30 -f logs/*.log
 """
 )
 

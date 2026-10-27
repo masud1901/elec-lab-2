@@ -17,6 +17,7 @@ import argparse
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -78,6 +79,9 @@ def main() -> None:
     parser.add_argument("--patience", type=int, default=15)
     parser.add_argument("--margin", type=int, default=250, help="free MiB kept in reserve")
     parser.add_argument("--list", action="store_true", help="print the job list and exit")
+    parser.add_argument("--quiet", action="store_true", help="do not echo training output")
+    parser.add_argument("--status-every", type=int, default=300,
+                        help="seconds between GPU status lines")
     args = parser.parse_args()
 
     jobs = []
@@ -111,15 +115,24 @@ def main() -> None:
             print(f"[skip] {run_id} (finished)", flush=True)
             continue
 
+        last_status = 0.0
         while True:
             reap()
             free = gpu_free_mb()
             if len(running) < args.jobs and free >= mem + args.margin:
                 break
-            time.sleep(15)
+            now = time.time()
+            if now - last_status > args.status_every:
+                last_status = now
+                active = ", ".join(f"{rid}({mem} MiB)" for rid, mem in running.values())
+                print(
+                    f"[wait] free {free} MiB, need {mem + args.margin} MiB | running: {active}",
+                    flush=True,
+                )
+            time.sleep(10)
 
         cmd = [
-            PY, "train.py", "--run-id", run_id,
+            PY, "-u", "train.py", "--run-id", run_id,
             "--epochs", str(args.epochs), "--patience", str(args.patience),
         ]
         if (run_dir / "best.pt").exists():
@@ -127,9 +140,22 @@ def main() -> None:
         cmd += extra
         log_file = log_dir / f"{run_id}.log"
         print(f"[start] {run_id} (free {gpu_free_mb()} MiB) -> {log_file}", flush=True)
+        env = dict(os.environ, PYTHONUNBUFFERED="1")
         with log_file.open("w") as fh:
-            proc = subprocess.Popen(cmd, cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT)
+            proc = subprocess.Popen(
+                cmd,
+                cwd=ROOT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=env,
+            )
         running[proc.pid] = (run_id, mem)
+        if not args.quiet:
+            threading.Thread(
+                target=_stream, args=(proc, fh, run_id), daemon=True
+            ).start()
 
     while running:
         reap()
@@ -143,6 +169,23 @@ def _alive(pid: int) -> bool:
         return True
     except OSError:
         return False
+
+
+def _stream(proc, fh, run_id: str) -> None:
+    """Echo the training output of one run to stdout and to its log file."""
+    try:
+        for line in proc.stdout:
+            fh.write(line)
+            fh.flush()
+            sys.stdout.write(f"[{run_id}] {line}")
+            sys.stdout.flush()
+    except Exception:
+        pass
+    finally:
+        try:
+            fh.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
