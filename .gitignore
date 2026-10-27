@@ -29,3 +29,6 @@ report/*.toc
 
 # logs
 logs/
+
+# Colab export (downloaded results, not part of the repo)
+ablation_results*/

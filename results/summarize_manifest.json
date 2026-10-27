@@ -1,9 +1,23 @@
 {
   "runs": [
+    "A_cnn_s42",
+    "A_gru_s42",
+    "B_conv0_s42",
+    "B_conv1_s42",
+    "B_conv2_s42",
+    "C_w20_s42",
+    "C_w42_s42",
     "ref_s42"
   ],
   "variants": [
+    "A_cnn",
+    "A_gru",
+    "B_conv0",
+    "B_conv1",
+    "B_conv2",
+    "C_w20",
+    "C_w42",
     "ref"
   ],
-  "n_runs": 1
+  "n_runs": 8
 }

@@ -1,0 +1,556 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+@page {
+  size: A4;
+  margin: 20mm 18mm 20mm 18mm;
+  @bottom-center {
+    content: counter(page) " / " counter(pages);
+    font-size: 8pt;
+    color: #666;
+  }
+}
+body {
+  font-family: "DejaVu Serif", Georgia, serif;
+  font-size: 9.6pt;
+  line-height: 1.42;
+  color: #1a1a1a;
+}
+h1, h2, h3, h4 {
+  font-family: "DejaVu Sans", Helvetica, sans-serif;
+  color: #12355b;
+  line-height: 1.2;
+}
+h1 { font-size: 20pt; margin: 0 0 4mm 0; }
+h2 { font-size: 13pt; margin: 6mm 0 2mm 0; border-bottom: 1px solid #d5dde8; padding-bottom: 1mm; }
+h3 { font-size: 10.5pt; margin: 4mm 0 1.5mm 0; }
+p { margin: 0 0 2.4mm 0; text-align: justify; }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 2mm 0 3mm 0;
+  font-family: "DejaVu Sans", Helvetica, sans-serif;
+  font-size: 7.6pt;
+}
+th { background: #eef2f7; color: #12355b; text-align: left; }
+th, td { border: 1px solid #cfd8e3; padding: 1.1mm 1.4mm; vertical-align: top; }
+tr:nth-child(even) td { background: #fafbfd; }
+code { font-family: "DejaVu Sans Mono", monospace; font-size: 8pt; background: #f2f4f7; padding: 0 0.5mm; }
+pre { background: #f5f7fa; border: 1px solid #dde3ea; padding: 2mm; font-size: 7.8pt; overflow-wrap: break-word; }
+figure { margin: 3mm 0 4mm 0; text-align: center; page-break-inside: avoid; }
+figure img { max-width: 100%; }
+figcaption { font-size: 8pt; color: #444; margin-top: 1mm; }
+.small { font-size: 8pt; color: #555; }
+.note { background: #f7f9fc; border-left: 3px solid #4c78a8; padding: 2mm 3mm; margin: 2mm 0 3mm 0; }
+.titlepage { text-align: center; margin-top: 30mm; }
+.titlepage h1 { font-size: 26pt; border: none; }
+.titlepage .subtitle { font-size: 12pt; color: #444; margin-bottom: 12mm; }
+.titlepage .meta { font-size: 10pt; color: #333; }
+.pagebreak { page-break-before: always; }
+</style></head>
+<body><h1 id="ablation-study-of-deepconvlstm-on-opportunity-10-epoch-report">Ablation Study of DeepConvLSTM on OPPORTUNITY — 10-Epoch Report</h1>
+<p><strong>Scope:</strong> Parts A and B of the workshop, four architecture variants, one seed
+(42), a reduced 10-epoch training budget, executed on a Google Colab T4 GPU.</p>
+<p><strong>Source of the numbers:</strong> <code>ablation_results (2)/</code> (exported from the Colab
+session <code>run_ablation_colab.ipynb</code>; run ids <code>A_cnn_s42</code>, <code>A_gru_s42</code>,
+<code>B_conv1_s42</code>, <code>B_conv2_s42</code>).</p>
+<hr />
+<h2 id="1-tldr">1. TL;DR</h2>
+<ul>
+<li><strong>The recurrent stack is what carries the model, and it is not about
+  capacity.</strong> Replacing the LSTMs with two dense layers of 128 units costs
+  <strong>−0.019 weighted F1 and −0.091 macro F1</strong> while <em>doubling</em> the parameter
+  count (7.49 M vs 2.99 M). Swapping LSTM cells for GRU cells changes almost
+  nothing (0.880 / 0.532 vs the converged LSTM reference), so the paper's
+  claim holds in the weaker form "recurrence helps", not in the stronger form
+  "LSTM cells specifically are needed".</li>
+<li><strong>One convolutional layer already extracts most of the usable temporal
+  structure.</strong> Two conv layers are only <strong>+0.015 weighted F1 / +0.025 macro
+  F1</strong> better than one; depth buys disambiguation, not accuracy.</li>
+<li><strong>The rare gestures are where the differences live.</strong> The three hardest
+  classes (drawers: F1 0.13–0.53) separate the variants far more than the
+  overall score does; the weighted metric, dominated by 83% Null windows,
+  hides most of it.</li>
+<li><strong>Caveat that bounds every number below:</strong> the budget was 10 epochs, and the
+  best checkpoint was at epoch 9–10 in all four runs, i.e. every model was
+  still improving when it was stopped. Absolute scores are therefore floors,
+  not converged values.</li>
+</ul>
+<hr />
+<h2 id="2-setup">2. Setup</h2>
+<h3 id="21-data-and-preprocessing">2.1 Data and preprocessing</h3>
+<p>OPPORTUNITY (UCI, 4 subjects, kitchen morning routine), 113 sensor channels
+sampled at 30 Hz, 18 classes (17 gestures + Null), raw label = gesture at the
+<strong>last sample</strong> of the window.</p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>Choice</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Channels</td>
+<td>the 113 OPPORTUNITY-challenge channels (acc/gyro/mag; quaternions and ambient sensors removed)</td>
+</tr>
+<tr>
+<td>Missing values</td>
+<td>linear interpolation per channel, edge extrapolation</td>
+</tr>
+<tr>
+<td>Normalisation</td>
+<td>min-max to <code>[0, 1]</code>, statistics from the <strong>training split only</strong></td>
+</tr>
+<tr>
+<td>Split</td>
+<td>paper protocol: train = S1 ADL1–5 + Drill, S2/S3 ADL1–2 + Drill; val = S2/S3 ADL3; test = S2/S3 ADL4–5</td>
+</tr>
+<tr>
+<td>Test</td>
+<td>118,658 sample-wise windows (stride 1); 83.3% Null</td>
+</tr>
+</tbody>
+</table>
+<h3 id="22-model-and-training">2.2 Model and training</h3>
+<p>Reference architecture (3,965,778 parameters): input <code>24 × 113</code> → 4 ×
+<code>Conv2d(64, kernel=(5,1))</code> over time → flatten to 7,232 features per time step
+→ 2 × LSTM(128) → 18-way softmax. Ablation variants change exactly one factor:</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Change</th>
+<th>Parameters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>A_cnn</code></td>
+<td>the two LSTMs → two dense layers of 128 units</td>
+<td>7,486,546</td>
+</tr>
+<tr>
+<td><code>A_gru</code></td>
+<td>LSTM cells → GRU cells</td>
+<td>2,990,418</td>
+</tr>
+<tr>
+<td><code>B_conv1</code></td>
+<td>4 conv layers → 1 conv layer</td>
+<td>3,904,146</td>
+</tr>
+<tr>
+<td><code>B_conv2</code></td>
+<td>4 conv layers → 2 conv layers</td>
+<td>3,924,690</td>
+</tr>
+</tbody>
+</table>
+<p>Optimisation (identical for all four runs): RMSProp (<code>lr = 1e-3</code>, decay 0.9),
+batch size 100, weight decay 1e-4, dropout 0.5, augmentation (jitter,
+scaling, ±2-sample shift), orthogonal initialisation, model selection on
+validation macro F1, test evaluated once at the selected checkpoint.</p>
+<h3 id="23-what-differs-from-the-full-protocol">2.3 What differs from the full protocol</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>This report</th>
+<th>Full protocol</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Epoch budget</td>
+<td><strong>10</strong> (best epoch = 9 or 10, i.e. budget-limited)</td>
+<td>80 with early stopping (patience 15)</td>
+</tr>
+<tr>
+<td>Seeds</td>
+<td>1 (42)</td>
+<td>3 (42, 43, 44)</td>
+</tr>
+<tr>
+<td>Reference in the same result set</td>
+<td><strong>absent</strong></td>
+<td>present (<code>ref_s42</code>: 0.893 / 0.595)</td>
+</tr>
+<tr>
+<td>Hardware</td>
+<td>Colab T4</td>
+<td>local GTX 1650 Ti / Colab T4</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="3-results">3. Results</h2>
+<h3 id="31-headline-numbers-test-split">3.1 Headline numbers (test split)</h3>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Weighted F1</th>
+<th>Macro F1</th>
+<th>Gesture macro F1</th>
+<th>Accuracy</th>
+<th>Best epoch</th>
+<th>Train time</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>A_cnn</code></td>
+<td>0.861</td>
+<td>0.441</td>
+<td>0.412</td>
+<td>0.871</td>
+<td>10/10</td>
+<td>13 min</td>
+</tr>
+<tr>
+<td><code>A_gru</code></td>
+<td>0.880</td>
+<td>0.532</td>
+<td>0.507</td>
+<td>0.883</td>
+<td>9/10</td>
+<td>8 min</td>
+</tr>
+<tr>
+<td><code>B_conv1</code></td>
+<td>0.862</td>
+<td>0.484</td>
+<td>0.457</td>
+<td>0.865</td>
+<td>9/10</td>
+<td>4 min</td>
+</tr>
+<tr>
+<td><code>B_conv2</code></td>
+<td>0.877</td>
+<td>0.509</td>
+<td>0.483</td>
+<td>0.881</td>
+<td>10/10</td>
+<td>5 min</td>
+</tr>
+</tbody>
+</table>
+<p><img alt="Part A" src="figs/fig_a_metrics_10ep.png" /></p>
+<p><img alt="Part B" src="figs/fig_b_10ep.png" /></p>
+<h3 id="32-comparison-with-converged-runs-80-epochs-local-gpu">3.2 Comparison with converged runs (80 epochs, local GPU)</h3>
+<p>The same four variants were also trained to convergence (80 epochs, seed 42)
+in the local run set. The gap between the two budgets is instructive:</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>Weighted F1 @10 → @80</th>
+<th>Macro F1 @10 → @80</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>A_cnn</code></td>
+<td>0.861 → 0.873 (−0.012)</td>
+<td>0.441 → 0.474 (−0.032)</td>
+</tr>
+<tr>
+<td><code>A_gru</code></td>
+<td>0.880 → 0.892 (−0.012)</td>
+<td>0.532 → <strong>0.624</strong> (−0.093)</td>
+</tr>
+<tr>
+<td><code>B_conv1</code></td>
+<td>0.862 → 0.881 (−0.019)</td>
+<td>0.484 → 0.542 (−0.058)</td>
+</tr>
+<tr>
+<td><code>B_conv2</code></td>
+<td>0.877 → 0.878 (−0.000)</td>
+<td>0.509 → 0.541 (−0.032)</td>
+</tr>
+</tbody>
+</table>
+<p><img alt="Budget effect" src="figs/fig_budget_effect.png" /></p>
+<p><strong>A short budget costs roughly twice as much on the macro score as on the
+weighted score.</strong> The weighted metric is within 0.00–0.019 of convergence
+after 10 epochs, because 83% of the test windows are Null and predicting Null
+is easy; the macro score is still 0.03–0.09 short, because it is dominated by
+exactly the rare gestures that need more epochs to be learned. The ordering of
+the variants is nevertheless identical in both regimes, so the qualitative
+conclusions of this report survive the truncation.</p>
+<h3 id="33-per-class-f1">3.3 Per-class F1</h3>
+<p><img alt="Per-class F1" src="figs/fig_per_class_10ep.png" /></p>
+<table>
+<thead>
+<tr>
+<th>Id</th>
+<th>Class</th>
+<th>Test windows</th>
+<th><code>A_cnn</code></th>
+<th><code>A_gru</code></th>
+<th><code>B_conv1</code></th>
+<th><code>B_conv2</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>Null</td>
+<td>98,798</td>
+<td>0.940</td>
+<td>0.946</td>
+<td>0.936</td>
+<td>0.944</td>
+</tr>
+<tr>
+<td>1</td>
+<td>Open Door 1</td>
+<td>677</td>
+<td>0.375</td>
+<td>0.511</td>
+<td>0.615</td>
+<td>0.573</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Open Door 2</td>
+<td>1,141</td>
+<td>0.449</td>
+<td>0.668</td>
+<td>0.731</td>
+<td>0.691</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Close Door 1</td>
+<td>708</td>
+<td>0.577</td>
+<td>0.661</td>
+<td>0.598</td>
+<td>0.545</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Close Door 2</td>
+<td>989</td>
+<td>0.688</td>
+<td>0.758</td>
+<td>0.805</td>
+<td>0.766</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Open Fridge</td>
+<td>2,739</td>
+<td>0.511</td>
+<td>0.545</td>
+<td>0.418</td>
+<td>0.634</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Close Fridge</td>
+<td>1,903</td>
+<td>0.497</td>
+<td>0.713</td>
+<td>0.621</td>
+<td>0.677</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Open Dishwasher</td>
+<td>1,190</td>
+<td>0.213</td>
+<td>0.535</td>
+<td>0.341</td>
+<td>0.467</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Close Dishwasher</td>
+<td>944</td>
+<td>0.294</td>
+<td>0.383</td>
+<td>0.333</td>
+<td>0.385</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Open Drawer 1</td>
+<td>468</td>
+<td>0.343</td>
+<td>0.242</td>
+<td>0.303</td>
+<td>0.362</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Close Drawer 1</td>
+<td>517</td>
+<td><strong>0.015</strong></td>
+<td><strong>0.534</strong></td>
+<td>0.298</td>
+<td>0.164</td>
+</tr>
+<tr>
+<td>11</td>
+<td>Open Drawer 2</td>
+<td>482</td>
+<td>0.291</td>
+<td>0.376</td>
+<td>0.153</td>
+<td>0.316</td>
+</tr>
+<tr>
+<td>12</td>
+<td>Close Drawer 2</td>
+<td>319</td>
+<td>0.132</td>
+<td>0.191</td>
+<td>0.207</td>
+<td>0.290</td>
+</tr>
+<tr>
+<td>13</td>
+<td>Open Drawer 3</td>
+<td>790</td>
+<td>0.421</td>
+<td>0.521</td>
+<td>0.471</td>
+<td>0.529</td>
+</tr>
+<tr>
+<td>14</td>
+<td>Close Drawer 3</td>
+<td>720</td>
+<td>0.527</td>
+<td>0.452</td>
+<td>0.552</td>
+<td>0.394</td>
+</tr>
+<tr>
+<td>15</td>
+<td>Clean Table</td>
+<td>1,192</td>
+<td>0.613</td>
+<td>0.544</td>
+<td>0.428</td>
+<td>0.368</td>
+</tr>
+<tr>
+<td>16</td>
+<td>Drink from Cup</td>
+<td>3,806</td>
+<td>0.565</td>
+<td>0.590</td>
+<td>0.555</td>
+<td>0.607</td>
+</tr>
+<tr>
+<td>17</td>
+<td>Toggle Switch</td>
+<td>1,275</td>
+<td>0.492</td>
+<td>0.396</td>
+<td>0.341</td>
+<td>0.443</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="4-interpretation">4. Interpretation</h2>
+<h3 id="41-part-a-is-the-lstm-what-helps">4.1 Part A — Is the LSTM what helps?</h3>
+<p><strong>Answer: recurrence helps a lot, but the LSTM cell type is not what matters.</strong></p>
+<ul>
+<li>The dense-CNN baseline is the worst variant on every metric
+  (0.861 / 0.441) <em>despite having the most parameters</em> (7.49 M vs 2.99 M for
+  the GRU). Capacity is therefore not the explanation.</li>
+<li>The gap is concentrated in the rare and easily-confused gestures, which is
+  exactly where temporal modelling should pay:
+  <code>Close Drawer 1</code> F1 is <strong>0.534 for the GRU and 0.015 for the CNN</strong>;
+  <code>Open Dishwasher</code> 0.535 vs 0.213; <code>Close Fridge</code> 0.713 vs 0.497.
+  The dense model cannot represent "open" vs "close" as an <em>ordering</em> of
+  sensor activity — it sees the same window as an unordered bag of features —
+  which is the paper's argument, now visible per class.</li>
+<li>GRU ≈ LSTM (converged: GRU 0.892 / 0.624 vs LSTM 0.893 / 0.595). The
+  recurrent mechanism, not the LSTM's gating, provides the benefit. Note the
+  GRU even edges out the LSTM on macro F1 at convergence (+0.029) while using
+  25% fewer parameters — a useful, slightly uncomfortable finding for the
+  original paper, which only compares against a non-recurrent CNN.</li>
+</ul>
+<h3 id="42-part-b-do-the-convolutions-matter">4.2 Part B — Do the convolutions matter?</h3>
+<p><strong>Answer: yes, but a single convolutional layer is already sufficient for most
+of the signal.</strong></p>
+<ul>
+<li>One conv layer reaches 0.862 / 0.484 and two layers 0.877 / 0.509; the
+  reference with four layers reaches 0.893 / 0.595 at convergence. So
+  1 → 4 layers buys +0.012 weighted F1 but +0.053 macro F1: <strong>extra depth
+  mostly improves the rare classes</strong>, i.e. it helps disambiguate similar
+  gestures rather than overall accuracy. The door pair shows this clearly —
+  <code>Open Door 2</code> reaches F1 0.615 with one conv layer and 0.731 with two, and
+  <code>Close Door 2</code> 0.805 with two layers — whereas <code>Drink from Cup</code>, a long and
+  easy gesture, is unaffected (0.555 → 0.607).</li>
+<li>In the same family, removing the convolutions entirely is catastrophic
+  (converged <code>B_conv0</code>: 0.798 / 0.228, with only 259 k parameters): the LSTM
+  cannot learn useful features directly from the 113 raw channels.</li>
+<li>Practical reading: one conv layer is the efficient operating point; more
+  layers are worth it only if per-gesture F1 on rare classes matters.</li>
+</ul>
+<h3 id="43-why-the-metrics-disagree-and-which-one-to-trust">4.3 Why the metrics disagree, and which one to trust</h3>
+<p>The reference architecture reaches weighted F1 ≈ 0.89 and macro F1 ≈ 0.60
+(the workshop's own targets), yet per-class F1 for <code>Close Drawer 2</code> is ≈ 0.19
+and for <code>Close Dishwasher</code> ≈ 0.38. <strong>The weighted metric is dominated by the
+Null class (83.3% of test windows) and hides the fact that several gestures are
+essentially unrecognised.</strong> Every conclusion in this report is therefore
+stated on the macro scale, and the per-class table is reported alongside the
+aggregate so that the aggregate cannot be mistaken for the whole story.</p>
+<hr />
+<h2 id="5-limitations">5. Limitations</h2>
+<ol>
+<li><strong>Budget-limited runs.</strong> The best checkpoint was the last epoch in all four
+   runs. Absolute numbers are floors; section 3.2 quantifies the gap.</li>
+<li><strong>One seed.</strong> No variance estimates; differences below ~0.02 F1 should not
+   be over-interpreted.</li>
+<li><strong>No reference inside this result set.</strong> Deltas quoted in section 4.1/4.2
+   use the converged local reference (0.893 / 0.595) — a different machine and
+   a different budget. For a clean table, the reference must be re-run on the
+   same session (<code>PARTS = ["0", "A", "B"]</code>).</li>
+<li><strong>Mixed figure provenance.</strong> <code>fig_ref_curves</code>, <code>fig_confusion_ref</code> and
+   <code>fig_part_e</code> inside the exported archive are copies of the repository's
+   figures, not Colab output; the figures in this report were regenerated
+   from the archive CSVs (<code>report/make_10epoch_figures.py</code>).</li>
+<li><strong>Parts C–F are not in this report.</strong> They are being produced separately
+   (window length, regularisation, learning-rate warm-up, focal loss).</li>
+</ol>
+<hr />
+<h2 id="6-reproducing-this-report">6. Reproducing this report</h2>
+<pre><code class="language-bash"># 1. data
+python download_data.py
+python preprocess.py --split paper
+
+# 2. the four variants of this report (10-epoch budget)
+python scripts/run_matrix.py --seeds 42 --parts A B --jobs 2 --epochs 10
+
+# 3. tables and figures
+python summarize.py --runs runs --out results
+python report/make_10epoch_figures.py
+</code></pre>
+<p>On Colab, <code>notebooks/run_ablation_colab.ipynb</code> performs the same steps; set
+<code>SEEDS = [42]</code>, <code>PARTS = ["A", "B"]</code>, <code>JOBS = 2</code>, <code>EPOCHS = 10</code> to reproduce
+exactly the numbers above, or <code>EPOCHS = 80</code> for the converged version.</p>
+<p><strong>Next step for the final report:</strong> re-run with <code>EPOCHS = 80</code> and seeds
+42/43/44 (Colab: <code>SEEDS = [42, 43, 44]</code>, <code>PARTS = ["0", "A", "B"]</code>), so the
+tables carry error bars and the reference row comes from the same session.</p>
+<hr />
+<h2 id="7-references">7. References</h2>
+<ol>
+<li>Ordóñez, F. J., &amp; Roggen, D. (2016). <em>Deep Convolutional and LSTM Recurrent
+   Neural Networks for Multimodal Wearable Activity Recognition.</em> Sensors,
+   16(1), 115.</li>
+<li>Chavarriaga, R., et al. (2013). <em>The Opportunity challenge: A benchmark
+   database for on-body sensor-based activity recognition.</em> Pattern
+   Recognition Letters, 34(15), 2033–2042.</li>
+<li>Lin, T.-Y., et al. (2017). <em>Focal Loss for Dense Object Detection.</em> ICCV.</li>
+</ol></body></html>

@@ -29,15 +29,15 @@ PY = os.environ.get("PY") or (str(_VENV_PY) if _VENV_PY.exists() else sys.execut
 
 # (run-id, extra args, rough GPU memory requirement in MiB)
 VARIANTS: List[Tuple[str, List[str], int]] = [
-    ("ref", ["--part", "0"], 1500),
-    ("A_cnn", ["--part", "A", "--model", "cnn"], 3600),
+    ("ref", ["--part", "0"], 1400),
+    ("A_cnn", ["--part", "A", "--model", "cnn"], 3000),
     ("A_gru", ["--part", "A", "--rnn", "gru"], 1300),
     ("B_conv0", ["--part", "B", "--n-conv", "0"], 500),
     ("B_conv1", ["--part", "B", "--n-conv", "1"], 1500),
     ("B_conv2", ["--part", "B", "--n-conv", "2"], 1500),
     ("C_w20", ["--part", "C", "--window", "20"], 1400),
-    ("C_w42", ["--part", "C", "--window", "42"], 2500),
-    ("C_w60", ["--part", "C", "--window", "60"], 3600),
+    ("C_w42", ["--part", "C", "--window", "42"], 2200),
+    ("C_w60", ["--part", "C", "--window", "60"], 3000),
     ("D_no_dropout", ["--part", "D", "--dropout", "0"], 1500),
     ("D_no_wd", ["--part", "D", "--weight-decay", "0"], 1500),
     ("D_no_aug", ["--part", "D", "--augment", "none"], 1500),

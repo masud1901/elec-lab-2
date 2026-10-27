@@ -1,13 +1,13 @@
-"""Build report/report.pdf from report/report.md.
-
-Requires: markdown, weasyprint (see requirements.txt).
+"""Build a report PDF from a Markdown report.
 
 Usage:
-    python report/build_report.py
+    python report/build_report.py                 # report/report.md
+    python report/build_report.py report/report_10epoch_ablation.md
 """
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import markdown
@@ -69,6 +69,14 @@ figcaption { font-size: 8pt; color: #444; margin-top: 1mm; }
 
 
 def main() -> None:
+    global MD_PATH, HTML_PATH, PDF_PATH
+    if len(sys.argv) > 1:
+        MD_PATH = (ROOT / sys.argv[1]).resolve() if not Path(sys.argv[1]).is_absolute() else Path(sys.argv[1])
+        HTML_PATH = MD_PATH.with_suffix(".html")
+        PDF_PATH = MD_PATH.with_suffix(".pdf")
+    if not MD_PATH.exists():
+        raise SystemExit(f"markdown source not found: {MD_PATH}")
+
     text = MD_PATH.read_text()
     html_body = markdown.markdown(
         text,
@@ -78,7 +86,7 @@ def main() -> None:
 <html><head><meta charset="utf-8"><style>{CSS}</style></head>
 <body>{html_body}</body></html>"""
     HTML_PATH.write_text(html)
-    HTML(string=html, base_url=str(ROOT)).write_pdf(PDF_PATH)
+    HTML(string=html, base_url=str(MD_PATH.parent)).write_pdf(PDF_PATH)
     print(f"[report] {PDF_PATH} ({PDF_PATH.stat().st_size/1024:.0f} KB)")
 
 
