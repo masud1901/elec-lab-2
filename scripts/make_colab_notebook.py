@@ -40,7 +40,8 @@ REPO_URL = "https://github.com/masud1901/elec-lab-2.git"
 BRANCH = "master"
 SEEDS = [42]            # e.g. [42, 43, 44]
 PARTS = ["A", "B"]       # 0 (reference), A, B, C, D, E, F
-JOBS = 1                # concurrent trainings on one GPU (2 needs >8 GB)
+JOBS = 4                # concurrent trainings on one GPU
+                       # T4 (15 GB): 4 is safe for the 0.8 s window, use 2-3 for 1.4/2.0 s
 EPOCHS = 80
 PUSH_BACK = False       # push results to GitHub (needs a token, repo is public)
 
@@ -129,6 +130,16 @@ code(
 code(
     """# --- check the GPU ------------------------------------------------------
 !nvidia-smi
+"""
+)
+
+code(
+    """# --- how many trainings fit? ---------------------------------------------
+# Each run needs ~1.5 GB (0.8 s window) up to ~4 GB (2 s window).
+# Set JOBS so that JOBS * 1.5 GB stays below the free VRAM shown above.
+import subprocess
+print(subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total,memory.free",
+                      "--format=csv"], capture_output=True, text=True).stdout)
 """
 )
 

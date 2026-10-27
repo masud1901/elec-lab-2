@@ -80,6 +80,9 @@ def main() -> None:
     parser.add_argument("--margin", type=int, default=250, help="free MiB kept in reserve")
     parser.add_argument("--list", action="store_true", help="print the job list and exit")
     parser.add_argument("--quiet", action="store_true", help="do not echo training output")
+    parser.add_argument("--order", default="heavy-first",
+                        choices=["heavy-first", "listed"],
+                        help="start the most expensive runs first (they are the long poles)")
     parser.add_argument("--status-every", type=int, default=300,
                         help="seconds between GPU status lines")
     args = parser.parse_args()
@@ -93,6 +96,10 @@ def main() -> None:
             if args.exclude_parts and part in args.exclude_parts:
                 continue
             jobs.append((f"{name}_s{seed}", extra + ["--seed", str(seed)], mem, seed, name))
+
+    if args.order == "heavy-first":
+        # longest runs first so they are not left over at the end of a session
+        jobs.sort(key=lambda j: -j[2])
 
     if args.list:
         for run_id, extra, mem, seed, name in jobs:
