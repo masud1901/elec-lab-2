@@ -36,26 +36,82 @@ merged by `summarize.py` afterwards.
 
 code(
     """# --- configuration -------------------------------------------------------
-REPO_URL = "https://github.com/masud1901/elec-lab-2.git"   # private repo: set GITHUB_TOKEN below
+REPO_URL = "https://github.com/masud1901/elec-lab-2.git"
 BRANCH = "master"
 SEEDS = [42]            # e.g. [42, 43, 44]
 PARTS = ["A", "B"]       # 0 (reference), A, B, C, D, E, F
 JOBS = 1                # concurrent trainings on one GPU (2 needs >8 GB)
 EPOCHS = 80
 PUSH_BACK = False       # push results to GitHub with GITHUB_TOKEN
-GITHUB_TOKEN = ""       # paste a token with repo scope if you want to push
+
+# --- GitHub access ---------------------------------------------------------
+# The repository is PRIVATE, so Colab needs a token to clone it.
+# Easiest: make the repo public -> leave GITHUB_TOKEN = "".
+# Otherwise: create a token (github.com/settings/tokens, scope: repo) and
+# paste it here, or store it as a Colab secret named GITHUB_TOKEN.
+GITHUB_TOKEN = ""
+
+try:                                   # Colab secrets
+    from google.colab import userdata
+    GITHUB_TOKEN = GITHUB_TOKEN or userdata.get("GITHUB_TOKEN") or ""
+except Exception:
+    try:                               # local Jupyter/VS Code
+        import subprocess
+        GITHUB_TOKEN = GITHUB_TOKEN or subprocess.check_output(
+            ["gh", "auth", "token"], text=True).strip()
+    except Exception:
+        pass
+
+print("token found:", bool(GITHUB_TOKEN))
 """
 )
 
 code(
     """!pip -q install pandas scikit-learn matplotlib pyyaml tqdm pytest weasyprint markdown
 
-import subprocess, os, sys, json, glob
+import os, sys, json, glob, shutil, subprocess, zipfile
 from pathlib import Path
 
-subprocess.run(["git", "clone", "--depth", "1", "--branch", BRANCH, REPO_URL, "elec-lab-2"],
-               check=False, cwd="/content")
-os.chdir("/content/elec-lab-2")
+HERE = Path.cwd()
+IN_REPO = (HERE / "train.py").exists() and (HERE / "scripts").is_dir()
+
+if IN_REPO:
+    # already inside the checkout (e.g. VS Code / local Jupyter): use it as is
+    REPO_DIR = HERE
+    print("using existing checkout:", REPO_DIR)
+elif Path("/content").exists():
+    REPO_DIR = Path("/content/elec-lab-2")
+else:
+    REPO_DIR = Path.home() / "elec-lab-2-run"
+
+def clone_repo():
+    if REPO_DIR.exists():
+        shutil.rmtree(REPO_DIR)
+    urls = []
+    if GITHUB_TOKEN:
+        urls.append(REPO_URL.replace("https://", f"https://{GITHUB_TOKEN}@"))
+    urls.append(REPO_URL)
+    for url in urls:
+        r = subprocess.run(
+            ["git", "clone", "--depth", "1", "--branch", BRANCH, url, str(REPO_DIR)],
+            capture_output=True, text=True)
+        if REPO_DIR.exists():
+            print("cloned", REPO_DIR)
+            return True
+        err = r.stderr.strip().splitlines()
+        print("clone failed:", err[-1] if err else r.returncode)
+    return False
+
+if not IN_REPO and not clone_repo():
+    raise SystemExit(
+        "Could not clone the repository.\\n"
+        "Fix one of these:\\n"
+        "  1) make the GitHub repo public, or\\n"
+        "  2) set GITHUB_TOKEN in the configuration cell (scope: repo), or\\n"
+        "  3) upload elec-lab-2.zip with the file uploader and unzip it to /content.")
+
+os.chdir(REPO_DIR)
+print("working dir:", os.getcwd())
 
 import torch
 print("torch", torch.__version__, "cuda", torch.cuda.is_available(),
@@ -67,6 +123,12 @@ code(
     """# --- data ---------------------------------------------------------------
 !python download_data.py
 !python preprocess.py --split paper
+"""
+)
+
+code(
+    """# --- check the GPU ------------------------------------------------------
+!nvidia-smi
 """
 )
 
@@ -95,17 +157,20 @@ print(pd.read_csv("results/agg.csv")[["part", "variant", "n_seeds",
 
 code(
     """# --- collect the results -------------------------------------------------
-import shutil, zipfile, os
-
-shutil.make_archive("/content/ablation_results", "zip", "/content/elec-lab-2/results")
-for run_dir in glob.glob("runs/*/"):
-    os.makedirs(f"/content/collected/{run_dir}", exist_ok=True)
+shutil.make_archive("/content/ablation_results" if Path("/content").exists() else "ablation_results",
+                    "zip", str(REPO_DIR / "results"))
+collected = Path("/content/collected") if Path("/content").exists() else Path("collected")
+shutil.rmtree(collected, ignore_errors=True)
+for run_dir in glob.glob(str(REPO_DIR / "runs/*/")):
+    target = collected / Path(run_dir).name
+    target.mkdir(parents=True, exist_ok=True)
     for name in ("run.json", "history.csv", "per_class.csv", "confusion_test.npy", "config.json"):
-        src = os.path.join(run_dir, name)
-        if os.path.exists(src):
-            shutil.copy(src, f"/content/collected/{run_dir}/{name}")
-shutil.make_archive("/content/ablation_runs", "zip", "/content/collected")
-print(os.path.getsize("/content/ablation_results.zip") / 1e6, "MB of tables and figures")
+        src = Path(run_dir) / name
+        if src.exists():
+            shutil.copy(src, target / name)
+base = "/content/ablation_runs" if Path("/content").exists() else "ablation_runs"
+shutil.make_archive(base, "zip", str(collected))
+print(base + ".zip created")
 """
 )
 
