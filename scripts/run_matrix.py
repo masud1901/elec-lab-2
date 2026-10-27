@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parent.parent
 _VENV_PY = ROOT / ".venv" / "bin" / "python"
@@ -55,17 +55,21 @@ PART_OF = {
 }
 
 
-def gpu_free_mb() -> int:
+def gpu_free_mb() -> Optional[int]:
+    """Free VRAM in MiB, or None if it cannot be determined."""
     try:
         out = subprocess.check_output(
             ["nvidia-smi", "--query-gpu=memory.total,memory.used",
              "--format=csv,noheader,nounits"],
+            stderr=subprocess.STDOUT,
             text=True,
+            timeout=30,
         ).strip().splitlines()[0]
-        total, used = [int(v) for v in out.split(",")]
-        return total - used
-    except Exception:
-        return 0
+        total, used = [int(v.strip()) for v in out.split(",")[:2]]
+        return max(total - used, 0)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] cannot read GPU memory: {exc}", flush=True)
+        return None
 
 
 def main() -> None:
@@ -83,8 +87,10 @@ def main() -> None:
     parser.add_argument("--order", default="heavy-first",
                         choices=["heavy-first", "listed"],
                         help="start the most expensive runs first (they are the long poles)")
-    parser.add_argument("--status-every", type=int, default=300,
+    parser.add_argument("--status-every", type=int, default=120,
                         help="seconds between GPU status lines")
+    parser.add_argument("--max-wait", type=int, default=900,
+                        help="max seconds to wait for free VRAM before starting anyway")
     args = parser.parse_args()
 
     jobs = []
@@ -110,6 +116,18 @@ def main() -> None:
     log_dir.mkdir(exist_ok=True)
     running: Dict[int, Tuple[str, int]] = {}
 
+    print(f"[runner] python  = {PY} (exists={Path(PY).exists()})", flush=True)
+    print(f"[runner] repo    = {ROOT}", flush=True)
+    print(f"[runner] free VRAM = {gpu_free_mb()} MiB", flush=True)
+    processed = ROOT / "data" / "processed"
+    if not processed.exists():
+        print(
+            "[warn] data/processed is missing -> run: python preprocess.py --split paper",
+            flush=True,
+        )
+    if not (ROOT / "train.py").exists():
+        raise SystemExit(f"train.py not found in {ROOT} (wrong working directory?)")
+
     def reap() -> None:
         for pid in list(running):
             if not _alive(pid):
@@ -123,17 +141,27 @@ def main() -> None:
             continue
 
         last_status = 0.0
+        wait_since = time.time()
         while True:
             reap()
             free = gpu_free_mb()
-            if len(running) < args.jobs and free >= mem + args.margin:
+            memory_ok = free is None or free >= mem + args.margin
+            wait_too_long = time.time() - wait_since > args.max_wait
+            if len(running) < args.jobs and (memory_ok or wait_too_long):
+                if wait_too_long and not memory_ok:
+                    print(
+                        f"[warn] waited {args.max_wait}s for VRAM (need "
+                        f"{mem + args.margin} MiB, free {free}); starting anyway",
+                        flush=True,
+                    )
                 break
             now = time.time()
             if now - last_status > args.status_every:
                 last_status = now
                 active = ", ".join(f"{rid}({mem} MiB)" for rid, mem in running.values())
                 print(
-                    f"[wait] free {free} MiB, need {mem + args.margin} MiB | running: {active}",
+                    f"[wait] free {free} MiB, need {mem + args.margin} MiB | "
+                    f"running: {active or '-'}",
                     flush=True,
                 )
             time.sleep(10)
