@@ -13,9 +13,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset
-
-from utils import worker_init_fn
+from torch.utils.data import Dataset
 
 PARTS = ("train", "val", "test")
 
@@ -198,41 +196,81 @@ def make_datasets(
     }
 
 
+class BatchLoader:
+    """Batches windows straight from tensors held on the compute device.
+
+    The per-sample ``Dataset``/``DataLoader`` path builds every window in
+    Python and augments it with numpy on the CPU, which with several trainings
+    sharing a 2-core Colab VM leaves the GPU idle.  Here the whole split lives
+    on the device (a few hundred MB), a batch is one gather, and the
+    augmentation (jitter, scale, shift) is vectorised.  Yields the same
+    ``(x, y, index)`` triples as ``WindowDataset``.
+    """
+
+    def __init__(
+        self,
+        dataset: WindowDataset,
+        batch_size: int,
+        shuffle: bool = False,
+        seed: int = 0,
+        device: Optional[torch.device] = None,
+    ):
+        self.dataset = dataset
+        self.batch_size = int(batch_size)
+        self.shuffle = shuffle
+        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.window = dataset.window
+        self.augment = dataset.augment if dataset.training else "none"
+
+        offsets = np.concatenate([[0], np.cumsum(dataset.sizes)[:-1]]).astype(np.int64)
+        self.data = torch.from_numpy(np.concatenate(dataset.data, axis=0)).to(self.device)
+        self.starts = torch.from_numpy(offsets[dataset.rec_idx] + dataset.starts).to(self.device)
+        self.labels = torch.from_numpy(dataset.labels).to(self.device)
+        self._arange = torch.arange(self.window, device=self.device)
+        self._rng = torch.Generator(device=self.device)
+        self._rng.manual_seed(seed)
+
+    def __len__(self) -> int:
+        return (len(self.labels) + self.batch_size - 1) // self.batch_size
+
+    def __iter__(self):
+        n = len(self.labels)
+        order = (
+            torch.randperm(n, generator=self._rng, device=self.device)
+            if self.shuffle
+            else torch.arange(n, device=self.device)
+        )
+        for lo in range(0, n, self.batch_size):
+            idx = order[lo : lo + self.batch_size]
+            yield self._gather(idx), self.labels[idx], idx
+
+    def _gather(self, idx: torch.Tensor) -> torch.Tensor:
+        starts = self.starts[idx]
+        if self.augment in ("shift", "full"):
+            shift = torch.randint(-2, 3, (len(idx), 1), generator=self._rng, device=self.device)
+            # edge padding: x'[t] = x[clamp(t - shift, 0, window - 1)]
+            offs = (self._arange[None, :] - shift).clamp_(0, self.window - 1)
+        else:
+            offs = self._arange[None, :]
+        x = self.data[starts[:, None] + offs]
+        if self.augment in ("jitter", "full"):
+            x = x + 0.01 * torch.randn(x.shape, generator=self._rng, device=self.device)
+        if self.augment in ("scale", "full"):
+            scale = 0.9 + 0.2 * torch.rand((len(idx), 1, 1), generator=self._rng, device=self.device)
+            x = x * scale
+        return x
+
+
 def make_loaders(
     datasets: Dict[str, WindowDataset],
     batch_size: int = 100,
-    num_workers: int = 0,
+    num_workers: int = 0,  # kept for the command line; batching is done on the device
     seed: int = 0,
-    test_batch_size: int = 256,
-) -> Dict[str, DataLoader]:
-    generator = torch.Generator()
-    generator.manual_seed(seed)
-    common = dict(
-        num_workers=num_workers,
-        pin_memory=torch.cuda.is_available(),
-        worker_init_fn=worker_init_fn if num_workers > 0 else None,
-    )
+    test_batch_size: int = 1024,
+    device: Optional[torch.device] = None,
+) -> Dict[str, BatchLoader]:
     return {
-        "train": DataLoader(
-            datasets["train"],
-            batch_size=batch_size,
-            shuffle=True,
-            drop_last=False,
-            generator=generator,
-            **common,
-        ),
-        "val": DataLoader(
-            datasets["val"],
-            batch_size=batch_size,
-            shuffle=False,
-            drop_last=False,
-            **common,
-        ),
-        "test": DataLoader(
-            datasets["test"],
-            batch_size=test_batch_size,
-            shuffle=False,
-            drop_last=False,
-            **common,
-        ),
+        "train": BatchLoader(datasets["train"], batch_size, shuffle=True, seed=seed, device=device),
+        "val": BatchLoader(datasets["val"], test_batch_size, seed=seed, device=device),
+        "test": BatchLoader(datasets["test"], test_batch_size, seed=seed, device=device),
     }

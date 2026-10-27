@@ -47,7 +47,6 @@ from data import make_datasets, make_loaders
 from losses import build_loss
 from models import build_model, count_parameters, init_weights
 from utils import (
-    AverageMeter,
     Logger,
     compute_metrics,
     format_metrics,
@@ -100,7 +99,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=100)
     p.add_argument("--micro-batch-size", type=int, default=0,
                    help="split each batch into micro-batches (gradient accumulation) to save memory")
-    p.add_argument("--test-batch-size", type=int, default=256)
+    p.add_argument("--test-batch-size", type=int, default=1024,
+                   help="batch size for validation/test passes (no effect on results)")
     p.add_argument("--epochs", type=int, default=80)
     p.add_argument("--patience", type=int, default=15)
     p.add_argument("--warmup-epochs", type=int, default=0)
@@ -185,23 +185,24 @@ def evaluate_loader(
     collect_probs: bool = False,
 ) -> Tuple[float, np.ndarray, np.ndarray, Optional[np.ndarray]]:
     model.eval()
-    loss_meter = AverageMeter("loss")
+    loss_sum = torch.zeros((), device=device)
+    n_seen = 0
     y_true, y_pred, probs = [], [], []
     for x, y, _ in loader:
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
         logits = model(x)
-        loss = criterion(logits, y)
-        loss_meter.update(loss.item(), x.size(0))
-        pred = logits.argmax(dim=1)
-        y_true.append(y.detach().cpu().numpy())
-        y_pred.append(pred.detach().cpu().numpy())
+        loss_sum += criterion(logits, y) * x.size(0)
+        n_seen += x.size(0)
+        y_true.append(y)
+        y_pred.append(logits.argmax(dim=1))
         if collect_probs:
-            probs.append(torch.softmax(logits, dim=1).detach().cpu().numpy())
-    y_true_np = np.concatenate(y_true)
-    y_pred_np = np.concatenate(y_pred)
-    probs_np = np.concatenate(probs) if collect_probs else None
-    return loss_meter.avg, y_true_np, y_pred_np, probs_np
+            probs.append(torch.softmax(logits, dim=1))
+    # a single device -> host transfer instead of one sync per batch
+    y_true_np = torch.cat(y_true).cpu().numpy()
+    y_pred_np = torch.cat(y_pred).cpu().numpy()
+    probs_np = torch.cat(probs).cpu().numpy() if collect_probs else None
+    return float(loss_sum) / max(n_seen, 1), y_true_np, y_pred_np, probs_np
 
 
 def train_one_epoch(
@@ -214,7 +215,8 @@ def train_one_epoch(
     micro_batch_size: int = 0,
 ) -> Tuple[float, np.ndarray, np.ndarray]:
     model.train()
-    loss_meter = AverageMeter("loss")
+    loss_sum = torch.zeros((), device=device)
+    n_seen = 0
     y_true, y_pred = [], []
     for x, y, _ in loader:
         x = x.to(device, non_blocking=True)
@@ -222,24 +224,26 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
         n = x.size(0)
         micro = micro_batch_size if micro_batch_size and micro_batch_size < n else n
-        loss_sum = 0.0
         for start in range(0, n, micro):
             xb = x[start : start + micro]
             yb = y[start : start + micro]
             logits = model(xb)
             loss = criterion(logits, yb)
-            if not torch.isfinite(loss):
-                raise DivergedError(f"non-finite loss: {loss.item()}")
-            loss_sum += loss.item() * xb.size(0)
+            loss_sum += loss.detach() * xb.size(0)
             # scale so that the accumulated gradient equals the full-batch gradient
             (loss * (xb.size(0) / n)).backward()
             if clip_grad > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
-            y_true.append(yb.detach().cpu().numpy())
-            y_pred.append(logits.argmax(dim=1).detach().cpu().numpy())
+            y_true.append(yb)
+            y_pred.append(logits.argmax(dim=1))
         optimizer.step()
-        loss_meter.update(loss_sum / n, n)
-    return loss_meter.avg, np.concatenate(y_true), np.concatenate(y_pred)
+        n_seen += n
+    # no per-step host syncs: a diverged (non-finite) loss is detected here,
+    # at the end of the epoch
+    mean_loss = float(loss_sum) / max(n_seen, 1)
+    if not np.isfinite(mean_loss):
+        raise DivergedError(f"non-finite loss: {mean_loss}")
+    return mean_loss, torch.cat(y_true).cpu().numpy(), torch.cat(y_pred).cpu().numpy()
 
 
 def main() -> None:
@@ -294,6 +298,7 @@ def main() -> None:
         num_workers=args.num_workers,
         seed=args.seed,
         test_batch_size=args.test_batch_size,
+        device=device,
     )
 
     model = build_model(

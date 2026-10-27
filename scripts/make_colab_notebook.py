@@ -40,8 +40,9 @@ REPO_URL = "https://github.com/masud1901/elec-lab-2.git"
 BRANCH = "master"
 SEEDS = [42]            # e.g. [42, 43, 44]
 PARTS = ["A", "B"]       # 0 (reference), A, B, C, D, E, F  (None = everything)
-JOBS = 4                # concurrent trainings on one GPU
-                       # T4 (15 GB): 4 is safe for the 0.8 s window, use 2-3 for 1.4/2.0 s
+JOBS = 2                # concurrent trainings on one GPU. A free Colab VM has 2 CPU cores,
+                       # each training needs one to feed the GPU, so more than 2 does not help
+ECHO_EVERY = 5          # show every 5th epoch line of each run (logs/<run-id>.log has all)
 EPOCHS = 80             # use 2 only for a quick smoke test
 WORKSHOP = True         # only the runs the PDF asks for (skips B_conv0 and C_w42)
 PUSH_BACK = False       # push results to GitHub (needs a token, repo is public)
@@ -71,7 +72,7 @@ print("token found:", bool(GITHUB_TOKEN), "(not needed for cloning a public repo
 code(
     """!pip -q install pandas scikit-learn matplotlib pyyaml tqdm pytest weasyprint markdown
 
-import os, sys, json, glob, shutil, subprocess, zipfile
+import os, sys, json, glob, shutil, signal, subprocess, zipfile
 from pathlib import Path
 
 HERE = Path.cwd()
@@ -146,14 +147,16 @@ print(subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total,memory.free",
 
 code(
     """# --- run the matrix ------------------------------------------------------
-# Output of every training run is echoed live (one line per epoch) and also
-# written to logs/<run-id>.log
+# Training output is echoed live (every ECHO_EVERY-th epoch line of each run);
+# the full output of every run is written to logs/<run-id>.log.
+# Stopping this cell (the stop button) also stops the running trainings.
 cmd = ["python", "-u", "scripts/run_matrix.py", "--seeds", *[str(s) for s in SEEDS],
        "--jobs", str(JOBS), "--epochs", str(EPOCHS)]
 if PARTS:
     cmd += ["--parts", *PARTS]
 if WORKSHOP:
     cmd.append("--workshop")
+cmd += ["--echo-every", str(ECHO_EVERY)]
 print(" ".join(cmd), flush=True)
 # subprocess.run(cmd) does not show the child's output in a Colab cell; read
 # the pipe and print it from the notebook process instead.
@@ -164,7 +167,8 @@ try:
         print(line, end="", flush=True)
     proc.wait()
 except KeyboardInterrupt:
-    proc.terminate()      # stop the runner (running trainings finish on their own)
+    proc.send_signal(signal.SIGINT)   # the runner then stops its trainings
+    proc.wait(timeout=60)
     raise
 """
 )

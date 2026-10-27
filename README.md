@@ -97,7 +97,16 @@ variants (the dense CNN baseline, the 2 s window) always run alone:
 ```bash
 python scripts/run_matrix.py --seeds 42 43 44 --jobs 2
 python scripts/run_matrix.py --seeds 42 --parts A B --list
+python scripts/run_matrix.py --seeds 42 --workshop --jobs 2   # only what the workshop PDF asks for
 ```
+
+Training output of every run is echoed live and written to `logs/<run-id>.log`
+(`--echo-every 5` shows every 5th epoch line, `--quiet` only writes the logs).
+A failed run is reported as `[FAILED]` and does not block the queue; Ctrl-C
+stops the running trainings. `--jobs` should not exceed the number of CPU
+cores (2 on a free Colab VM), since each training needs one core to feed the GPU.
+The windows of a split are kept on the GPU and batched/augmented there
+(`data.BatchLoader`), so there is no CPU data-loading bottleneck.
 
 ### Running on Google Colab
 

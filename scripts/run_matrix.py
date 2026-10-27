@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -85,7 +86,8 @@ def main() -> None:
     parser.add_argument("--jobs", type=int, default=2, help="maximum concurrent runs")
     parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--patience", type=int, default=15)
-    parser.add_argument("--margin", type=int, default=250, help="free MiB kept in reserve")
+    parser.add_argument("--margin", type=int, default=600,
+                        help="free MiB kept in reserve (each run also holds its data on the GPU)")
     parser.add_argument("--workshop", action="store_true",
                         help="only the runs the workshop PDF asks for (skips B_conv0, C_w42)")
     parser.add_argument("--list", action="store_true", help="print the job list and exit")
@@ -95,6 +97,10 @@ def main() -> None:
                         help="start the most expensive runs first (they are the long poles)")
     parser.add_argument("--status-every", type=int, default=120,
                         help="seconds between GPU status lines")
+    parser.add_argument("--echo-every", type=int, default=1,
+                        help="print every n-th epoch line of each run (all lines go to logs/)")
+    parser.add_argument("--ramp-up", type=int, default=45,
+                        help="seconds during which a started job's VRAM counts as reserved")
     parser.add_argument("--max-wait", type=int, default=900,
                         help="max seconds to wait for free VRAM before starting anyway")
     args = parser.parse_args()
@@ -122,11 +128,15 @@ def main() -> None:
 
     log_dir = ROOT / "logs"
     log_dir.mkdir(exist_ok=True)
-    running: Dict[int, Tuple[str, int]] = {}
+    running: List[Job] = []
 
     print(f"[runner] python  = {PY} (exists={Path(PY).exists()})", flush=True)
     print(f"[runner] repo    = {ROOT}", flush=True)
-    print(f"[runner] free VRAM = {gpu_free_mb()} MiB", flush=True)
+    print(f"[runner] free VRAM = {gpu_free_mb()} MiB, cpus = {os.cpu_count()}", flush=True)
+    print(f"[runner] {len(jobs)} runs, up to {args.jobs} at a time", flush=True)
+    if (os.cpu_count() or 1) < args.jobs:
+        print(f"[warn] --jobs {args.jobs} > {os.cpu_count()} CPUs: the trainings will compete "
+              "for CPU time; --jobs 2 is usually as fast", flush=True)
     processed = ROOT / "data" / "processed"
     if not processed.exists():
         print(
@@ -136,55 +146,86 @@ def main() -> None:
     if not (ROOT / "train.py").exists():
         raise SystemExit(f"train.py not found in {ROOT} (wrong working directory?)")
 
+    failed: List[str] = []
+
     def reap() -> None:
-        for pid in list(running):
-            if not _alive(pid):
-                run_id = running.pop(pid)[0]
-                print(f"[done] {run_id}", flush=True)
+        # Popen.poll() also collects the exit status; os.kill(pid, 0) would keep
+        # reporting finished children (zombies) as alive and block the queue.
+        for job in list(running):
+            code = job.proc.poll()
+            if code is None:
+                continue
+            running.remove(job)
+            job.thread.join(timeout=5)
+            took = human_time(time.time() - job.started)
+            if code == 0:
+                print(f"[done] {job.run_id} in {took}", flush=True)
+            else:
+                failed.append(job.run_id)
+                print(f"[FAILED] {job.run_id} exit code {code} after {took}; "
+                      f"see logs/{job.run_id}.log", flush=True)
 
-    for run_id, extra, mem, seed, name in jobs:
-        run_dir = ROOT / "runs" / run_id
-        if (run_dir / "run.json").exists():
-            print(f"[skip] {run_id} (finished)", flush=True)
-            continue
+    def reserved_mb() -> int:
+        """VRAM that recently started jobs have not allocated yet."""
+        now = time.time()
+        return sum(j.mem for j in running if now - j.started < args.ramp_up)
 
-        last_status = 0.0
-        wait_since = time.time()
-        while True:
-            reap()
-            free = gpu_free_mb()
-            memory_ok = free is None or free >= mem + args.margin
-            wait_too_long = time.time() - wait_since > args.max_wait
-            if len(running) < args.jobs and (memory_ok or wait_too_long):
-                if wait_too_long and not memory_ok:
+    def stop_all() -> None:
+        for job in running:
+            if job.proc.poll() is None:
+                job.proc.send_signal(signal.SIGINT)
+        deadline = time.time() + 20
+        for job in running:
+            try:
+                job.proc.wait(timeout=max(deadline - time.time(), 0.1))
+            except subprocess.TimeoutExpired:
+                job.proc.kill()
+
+    try:
+        for run_id, extra, mem, seed, name in jobs:
+            run_dir = ROOT / "runs" / run_id
+            if (run_dir / "run.json").exists():
+                print(f"[skip] {run_id} (finished)", flush=True)
+                continue
+
+            last_status = 0.0
+            wait_since = time.time()
+            while True:
+                reap()
+                free = gpu_free_mb()
+                if free is not None:
+                    free -= reserved_mb()
+                memory_ok = free is None or free >= mem + args.margin
+                wait_too_long = time.time() - wait_since > args.max_wait
+                if len(running) < args.jobs and (memory_ok or wait_too_long):
+                    if wait_too_long and not memory_ok:
+                        print(
+                            f"[warn] waited {args.max_wait}s for VRAM (need "
+                            f"{mem + args.margin} MiB, free {free}); starting anyway",
+                            flush=True,
+                        )
+                    break
+                now = time.time()
+                if now - last_status > args.status_every:
+                    last_status = now
+                    active = ", ".join(f"{j.run_id}({j.mem} MiB)" for j in running)
                     print(
-                        f"[warn] waited {args.max_wait}s for VRAM (need "
-                        f"{mem + args.margin} MiB, free {free}); starting anyway",
+                        f"[wait] free {free} MiB, need {mem + args.margin} MiB | "
+                        f"running: {active or '-'}",
                         flush=True,
                     )
-                break
-            now = time.time()
-            if now - last_status > args.status_every:
-                last_status = now
-                active = ", ".join(f"{rid}({mem} MiB)" for rid, mem in running.values())
-                print(
-                    f"[wait] free {free} MiB, need {mem + args.margin} MiB | "
-                    f"running: {active or '-'}",
-                    flush=True,
-                )
-            time.sleep(10)
+                time.sleep(2)
 
-        cmd = [
-            PY, "-u", "train.py", "--run-id", run_id,
-            "--epochs", str(args.epochs), "--patience", str(args.patience),
-        ]
-        if (run_dir / "best.pt").exists():
-            cmd.append("--resume")
-        cmd += extra
-        log_file = log_dir / f"{run_id}.log"
-        print(f"[start] {run_id} (free {gpu_free_mb()} MiB) -> {log_file}", flush=True)
-        env = dict(os.environ, PYTHONUNBUFFERED="1")
-        with log_file.open("w") as fh:
+            cmd = [
+                PY, "-u", "train.py", "--run-id", run_id,
+                "--epochs", str(args.epochs), "--patience", str(args.patience),
+            ]
+            if (run_dir / "best.pt").exists():
+                cmd.append("--resume")
+            cmd += extra
+            log_file = log_dir / f"{run_id}.log"
+            print(f"[start] {run_id} (free {gpu_free_mb()} MiB) -> {log_file}", flush=True)
+            env = dict(os.environ, PYTHONUNBUFFERED="1")
             proc = subprocess.Popen(
                 cmd,
                 cwd=ROOT,
@@ -194,41 +235,68 @@ def main() -> None:
                 bufsize=1,
                 env=env,
             )
-        running[proc.pid] = (run_id, mem)
-        if not args.quiet:
-            threading.Thread(
-                target=_stream, args=(proc, fh, run_id), daemon=True
-            ).start()
+            # the pump thread must always drain the pipe, otherwise the child
+            # blocks once the pipe buffer is full (also with --quiet)
+            thread = threading.Thread(
+                target=_stream,
+                args=(proc, log_file, run_id, not args.quiet, args.echo_every),
+                daemon=True,
+            )
+            thread.start()
+            running.append(Job(run_id, mem, proc, thread, time.time()))
 
-    while running:
-        reap()
-        time.sleep(15)
+        while running:
+            reap()
+            time.sleep(2)
+    except KeyboardInterrupt:
+        print("[runner] interrupted: stopping running trainings", flush=True)
+        stop_all()
+        raise SystemExit(130)
+
+    if failed:
+        print(f"[all done] {len(failed)} run(s) failed: {', '.join(failed)}", flush=True)
+        raise SystemExit(1)
     print("[all done]", flush=True)
 
 
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+class Job:
+    def __init__(self, run_id, mem, proc, thread, started):
+        self.run_id = run_id
+        self.mem = mem
+        self.proc = proc
+        self.thread = thread
+        self.started = started
 
 
-def _stream(proc, fh, run_id: str) -> None:
-    """Echo the training output of one run to stdout and to its log file."""
-    try:
+def human_time(seconds: float) -> str:
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}h{m:02d}m" if h else f"{m}m{s:02d}s"
+
+
+def _stream(proc, log_path: Path, run_id: str, echo: bool, echo_every: int) -> None:
+    """Write the training output of one run to its log file and (optionally) stdout.
+
+    ``echo_every`` > 1 prints only every n-th epoch line, which keeps the
+    notebook output readable when several runs train at once; the log file
+    always has every line.
+    """
+    n_epoch_lines = 0
+    with log_path.open("w") as fh:
         for line in proc.stdout:
             fh.write(line)
             fh.flush()
+            if not echo:
+                continue
+            if "[epoch" in line:
+                n_epoch_lines += 1
+                if n_epoch_lines % max(echo_every, 1) != 1 and echo_every > 1:
+                    continue
+            if len(line) > 200:
+                line = line[:197] + "...\n"
             sys.stdout.write(f"[{run_id}] {line}")
             sys.stdout.flush()
-    except Exception:
-        pass
-    finally:
-        try:
-            fh.close()
-        except Exception:
-            pass
 
 
 if __name__ == "__main__":
