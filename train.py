@@ -98,6 +98,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--alpha", type=float, default=0.9, help="RMSProp decay")
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--batch-size", type=int, default=100)
+    p.add_argument("--micro-batch-size", type=int, default=0,
+                   help="split each batch into micro-batches (gradient accumulation) to save memory")
     p.add_argument("--test-batch-size", type=int, default=256)
     p.add_argument("--epochs", type=int, default=80)
     p.add_argument("--patience", type=int, default=15)
@@ -209,6 +211,7 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     clip_grad: float = 0.0,
+    micro_batch_size: int = 0,
 ) -> Tuple[float, np.ndarray, np.ndarray]:
     model.train()
     loss_meter = AverageMeter("loss")
@@ -217,17 +220,25 @@ def train_one_epoch(
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
-        logits = model(x)
-        loss = criterion(logits, y)
-        if not torch.isfinite(loss):
-            raise DivergedError(f"non-finite loss: {loss.item()}")
-        loss.backward()
-        if clip_grad > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
+        n = x.size(0)
+        micro = micro_batch_size if micro_batch_size and micro_batch_size < n else n
+        loss_sum = 0.0
+        for start in range(0, n, micro):
+            xb = x[start : start + micro]
+            yb = y[start : start + micro]
+            logits = model(xb)
+            loss = criterion(logits, yb)
+            if not torch.isfinite(loss):
+                raise DivergedError(f"non-finite loss: {loss.item()}")
+            loss_sum += loss.item() * xb.size(0)
+            # scale so that the accumulated gradient equals the full-batch gradient
+            (loss * (xb.size(0) / n)).backward()
+            if clip_grad > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_grad)
+            y_true.append(yb.detach().cpu().numpy())
+            y_pred.append(logits.argmax(dim=1).detach().cpu().numpy())
         optimizer.step()
-        loss_meter.update(loss.item(), x.size(0))
-        y_true.append(y.detach().cpu().numpy())
-        y_pred.append(logits.argmax(dim=1).detach().cpu().numpy())
+        loss_meter.update(loss_sum / n, n)
     return loss_meter.avg, np.concatenate(y_true), np.concatenate(y_pred)
 
 
@@ -358,7 +369,13 @@ def main() -> None:
 
         try:
             train_loss, tr_true, tr_pred = train_one_epoch(
-                model, loaders["train"], criterion, optimizer, device, clip_grad=args.clip_grad
+                model,
+                loaders["train"],
+                criterion,
+                optimizer,
+                device,
+                clip_grad=args.clip_grad,
+                micro_batch_size=args.micro_batch_size,
             )
         except DivergedError as exc:
             log(f"[diverge] epoch {epoch}: {exc}")

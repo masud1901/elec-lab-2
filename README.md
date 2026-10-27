@@ -88,6 +88,37 @@ scripts/run_all.sh long
 python summarize.py
 ```
 
+### Parallel runner
+
+`scripts/run_matrix.py` runs the whole matrix (any seeds, any parts) with a
+configurable number of concurrent trainings and a GPU-memory guard, so heavy
+variants (the dense CNN baseline, the 2 s window) always run alone:
+
+```bash
+python scripts/run_matrix.py --seeds 42 43 44 --jobs 2
+python scripts/run_matrix.py --seeds 42 --parts A B --list
+```
+
+### Running on Google Colab
+
+`notebooks/run_ablation_colab.ipynb` runs the same matrix on a Colab GPU
+(T4/A100), which is considerably faster than a laptop card for this
+LSTM-heavy model. It clones the repository, downloads and preprocesses the
+dataset, runs the selected parts and seeds, rebuilds the tables, figures and
+report, and finally exports the results as zip files.
+
+```bash
+# locally: build the notebook (already committed) and open it in Colab
+python scripts/make_colab_notebook.py
+
+# after the Colab run: merge the downloaded archive into this checkout
+scripts/import_colab_results.sh ~/Downloads/ablation_runs.zip
+python summarize.py
+```
+
+Colab sessions are independent, so different team members can run different
+parts (A, B, C, D, E, F) concurrently; `summarize.py` then merges everything.
+
 Individual runs:
 
 ```bash
